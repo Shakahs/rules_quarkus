@@ -188,6 +188,10 @@ def _test_impl(ctx, integration):
     return [
         DefaultInfo(executable = launcher, runfiles = runfiles),
         OutputGroupInfo(quarkus_model = depset([model])),
+        RunEnvironmentInfo(
+            environment = ctx.attr.env,
+            inherited_environment = [],
+        ),
     ]
 
 def _quarkus_test_impl(ctx):
@@ -215,6 +219,9 @@ def _test_attrs(integration = False):
             doc = "Internal deployment resolver graph catalog (set by macro).",
         ),
         "deployment_artifacts": attr.label(mandatory = True),
+        "env": attr.string_dict(
+            doc = "Declared environment variables for the test process. Values are exported by the launcher, so sandboxed browser and native helpers receive them.",
+        ),
         "platform_catalog": attr.label(
             allow_single_file = [".json"],
             mandatory = True,
