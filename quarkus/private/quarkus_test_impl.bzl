@@ -15,7 +15,7 @@ load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusAppInfo", "QuarkusNativeInfo")
-load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "has_maven_artifact", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "QuarkusBazelTargetGraphInfo", "collect_all_model_artifacts", "has_maven_artifact", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "validate_build_property_keys")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_extension_runtime_jars", "collect_local_app_jars", "collect_runtime_classpath", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
@@ -104,6 +104,63 @@ def _integration_artifact(ctx):
         artifact_type = artifact_type,
     )
 
+def _canonical_dep_classes(ctx):
+    """Presents each direct local dep by the class directory the model names for it.
+
+    Quarkus decides what counts as a test class by comparing the classpath
+    element a class came from against the test location the model supplies:
+
+        return cpe.isRuntime() && testLocation.equals(cpe.getRoot());
+
+    (`PathTestHelper.isTestClass`, which `TestBuildChainFunction` turns into the
+    `TestClassPredicateBuildItem` that ArC uses as a bean-removal exclusion.)
+    `testLocation` is the workspace module's test source output --
+    `<target>.quarkus-classes`, the directory the aspect merges a target's jars
+    into -- so a classpath built from those jars can never equal it, and two
+    things go wrong silently: a target compiled from more than one language
+    (rules_scala emits a mixed target's Java sources into `<name>_java.jar`
+    beside `<name>.jar`) has half its classes outside the application, and no
+    bean declared in the test sources is exempt from unused-bean removal, so one
+    reachable only through `Arc.container().select(...)` is dropped.
+
+    Args:
+        ctx: Rule context.
+
+    Returns:
+        A struct with `files` (the substituted directories, for runfiles),
+        `replace` (a target's first output jar path mapped to its directories)
+        and `drop` (the remaining output jar paths).
+    """
+    files = []
+    replace = {}
+    drop = {}
+    for dep in ctx.attr.deps:
+        if JavaInfo not in dep or dep.label.workspace_name:
+            continue
+        if QuarkusBazelTargetGraphInfo not in dep:
+            continue
+        directories = dep[QuarkusBazelTargetGraphInfo].workspace_outputs
+        output_jars = dep[JavaInfo].runtime_output_jars
+        if not directories or not output_jars:
+            continue
+        files.extend(directories)
+        replace[output_jars[0].path] = directories
+        for jar in output_jars[1:]:
+            drop[jar.path] = True
+    return struct(files = files, replace = replace, drop = drop)
+
+def _canonical(entries, canonical):
+    """Substitutes canonical class directories into a classpath, in place and in order."""
+    substituted = []
+    for entry in entries:
+        if entry.path in canonical.drop:
+            continue
+        if entry.path in canonical.replace:
+            substituted.extend(canonical.replace[entry.path])
+        else:
+            substituted.append(entry)
+    return substituted
+
 def _test_impl(ctx, integration):
     if not ctx.attr.deps:
         rule_name = "quarkus_integration_test" if integration else "quarkus_test"
@@ -121,10 +178,11 @@ def _test_impl(ctx, integration):
     # every workspace class is indexed twice.
     # Extension runtime jars are excluded from direct_jars because they are not
     # local application outputs.
-    cp_file = write_runfiles_paths_file(ctx, "_cp.txt", runtime_classpath, ":")
+    canonical = _canonical_dep_classes(ctx)
+    cp_file = write_runfiles_paths_file(ctx, "_cp.txt", _canonical(runtime_classpath.to_list(), canonical), ":")
     declared_build_properties = ctx.attr.build_properties if not integration else {}
     ext_rt_jars = collect_extension_runtime_jars(ctx.attr.deps)
-    direct_jars_file = write_runfiles_paths_file(ctx, "_direct_jars.txt", collect_local_app_jars(ctx.attr.deps, runtime_classpath, ext_rt_jars), ",")
+    direct_jars_file = write_runfiles_paths_file(ctx, "_direct_jars.txt", _canonical(collect_local_app_jars(ctx.attr.deps, runtime_classpath, ext_rt_jars), canonical), ",")
 
     tool_jar = ctx.file.quarkifier_tool
     java_runtime = ctx.attr._java_runtime[java_common.JavaRuntimeInfo]
@@ -171,7 +229,7 @@ def _test_impl(ctx, integration):
         is_executable = True,
     )
 
-    direct_runfiles = [cp_file, direct_jars_file, model, tool_jar] + coverage_files
+    direct_runfiles = [cp_file, direct_jars_file, model, tool_jar] + coverage_files + canonical.files
     if coverage_jars_file:
         direct_runfiles.append(coverage_jars_file)
     if integration:

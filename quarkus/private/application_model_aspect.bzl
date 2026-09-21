@@ -17,6 +17,7 @@ QuarkusBazelTargetGraphInfo = provider(
         "root_ids": "Depset of graph node ids represented by this target.",
         "transitive_artifacts": "Runtime artifacts below the root, excluding its outputs.",
         "transitive_fragments": "Runtime fragments below the root, excluding its fragment.",
+        "workspace_outputs": "This target's own canonical class directories, the paths the model describes it by.",
     },
 )
 
@@ -253,6 +254,7 @@ def _application_model_aspect_impl(target, ctx):
     direct_fragments = []
     direct_artifacts = []
     direct_coordinate_keys = []
+    direct_workspace_outputs = []
     root_ids = []
     root_edges = []
     if JavaInfo in target and QuarkusExtensionInfo in target:
@@ -288,6 +290,7 @@ def _application_model_aspect_impl(target, ctx):
         direct_artifacts.extend(runtime_outputs)
         direct_artifacts.extend(workspace_outputs)
         direct_artifacts.extend(_workspace_inputs(ctx))
+        direct_workspace_outputs = workspace_outputs
         root_ids.append(str(target.label))
     else:
         for graph in child_graphs:
@@ -306,6 +309,7 @@ def _application_model_aspect_impl(target, ctx):
             root_ids = depset(root_ids),
             transitive_artifacts = depset(transitive = transitive_artifacts),
             transitive_fragments = depset(transitive = transitive_fragments),
+            workspace_outputs = direct_workspace_outputs,
         ),
     ]
 

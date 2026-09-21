@@ -72,7 +72,16 @@ _realpath_entries() {
   done < "$src"
 }
 
-# Runtime classpath (app + test jars, for both JUnit -cp and quarkifier)
+# Runtime classpath (app + test jars, for both JUnit -cp and quarkifier).
+#
+# Both get the resolved paths. The serialized model resolves every artifact path
+# (`ExplicitApplicationModelBuilder.resolveArtifactPaths` calls `toRealPath` in
+# dev and test), and Quarkus compares the two by `Path.equals`, which is lexical:
+# `PathTestHelper.isTestClass` answers `testLocation.equals(cpe.getRoot())`, where
+# `testLocation` comes from the model and `cpe.getRoot()` from this classpath. A
+# runfiles path and the exec-root path it links to are the same file and never
+# equal strings, so launching JUnit with the unresolved paths makes that check --
+# and the ArC removal exclusion for test classes built on it -- always false.
 APP_CP_FILE=$(mktemp)
 _prefix_entries ":" "${WORKSPACE_DIR}/%{classpath_file}" "$APP_CP_FILE"
 MODEL_APP_CP_FILE=$(mktemp)
@@ -130,11 +139,11 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# Keep APP_CP_FILE and DIRECT_JARS_FILE for phase 2; clean the rest.
-rm -f "$MODEL_APP_CP_FILE" "$LOCAL_APP_JARS_FILE"
+# Keep MODEL_APP_CP_FILE and DIRECT_JARS_FILE for phase 2; clean the rest.
+rm -f "$APP_CP_FILE" "$LOCAL_APP_JARS_FILE"
 
 if [ ! -f "$MODEL_DIR/test-app-model.dat" ]; then
-  rm -f "$APP_CP_FILE" "$DIRECT_JARS_FILE" "$COVERAGE_JARS_FILE"
+  rm -f "$MODEL_APP_CP_FILE" "$DIRECT_JARS_FILE" "$COVERAGE_JARS_FILE"
   echo "ERROR: test-app-model.dat was not generated" >&2
   exit 1
 fi
@@ -278,7 +287,7 @@ JAVA_ARGS_FILE=$(mktemp)
   if [ "$COVERAGE_ENABLED" = "true" ]; then
     printf '%s:' "$JACOCO_RUNNER" | _argfile_escape
   fi
-  _argfile_escape < "$APP_CP_FILE"
+  _argfile_escape < "$MODEL_APP_CP_FILE"
   printf '"\n'
 } > "$JAVA_ARGS_FILE"
 
@@ -287,6 +296,7 @@ JAVA_ARGS_FILE=$(mktemp)
   --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
   %{build_property_jvm_flags} \
   -Dquarkus-internal-test.serialized-app-model.path="$MODEL_DIR/test-app-model.dat" \
+  -DTEST_TO_MAIN_MAPPINGS=.quarkus-classes:.quarkus-classes \
   -Dplatform.quarkus.native.builder-image=quay.io/quarkus/ubi9-quarkus-mandrel-builder-image:jdk-25@sha256:4dda6a3d677b57614849557d0d18aac7326c4f30175142b0f1bb91bdcfc5c29a \
   -Dquarkus.package.jar.type=fast-jar \
   "${TEST_JVM_ARGS[@]}" \
@@ -296,7 +306,7 @@ JAVA_ARGS_FILE=$(mktemp)
   --reports-dir="$REPORTS_DIR")
 FINAL_EXIT=$?
 
-rm -f "$JAVA_ARGS_FILE" "$APP_CP_FILE"
+rm -f "$JAVA_ARGS_FILE" "$MODEL_APP_CP_FILE"
 
 # Publish JUnit's real test suites to Bazel. A reporting failure can fail an
 # otherwise successful test, but never replaces or hides a JUnit failure.
