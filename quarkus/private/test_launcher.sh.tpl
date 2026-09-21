@@ -112,7 +112,18 @@ while IFS=, read -ra JAR_ENTRIES; do
 done < "$DIRECT_JARS_FILE"
 
 # Phase 1: Generate serialized ApplicationModel at test time.
-MODEL_DIR=$(mktemp -d)
+# Deliberately NOT under TEST_TMPDIR, unlike the reports and artifact-metadata directories below.
+# The Web Bundler stages the application's bundle here, and Tailwind scans that staged directory for
+# the utility classes the page uses. TEST_TMPDIR lives inside Bazel's output base, which is under a
+# dot-directory, and Tailwind's scanner skips hidden paths — so staging there yields a stylesheet
+# with every application class purged, and a silently unstyled page rather than a failed build.
+#
+# The cost is that only the trap below reclaims this, and a trap does not run when the test JVM is
+# killed: a Bazel timeout, or an interrupted run. Each augmentation extracts the web dependencies
+# here, thousands of small files apiece, so killed tests accumulate until /tmp runs out of inodes
+# with most of its bytes still free. The name is the remedy: leaked directories are identifiable as
+# `quarkus-model.*` and can be removed without guessing at what else `mktemp -d` left behind.
+MODEL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarkus-model.XXXXXX")
 ARTIFACT_METADATA_DIR=""
 _cleanup_test_dirs() {
   rm -rf "$MODEL_DIR"
