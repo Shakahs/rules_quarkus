@@ -961,10 +961,26 @@ def _locked_artifact_download(rctx, lock_data, node, output_root):
     return str(rctx.path(output))
 
 def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
-    """Reads Quarkus descriptors directly from Maven-locked runtime candidates."""
+    """Reads Quarkus descriptors from every Maven-locked runtime artifact the direct ones reach.
+
+    Quarkus's own resolver (`ApplicationDependencyResolver.resolveExtensionInfo`) opens
+    `META-INF/quarkus-extension.properties` in every runtime node of the graph, direct or
+    transitive, and takes its deployment artifact and `conditional-dependencies` from there.
+    An extension that arrives only through another extension's POM — `quarkus-amazon-common`
+    behind `quarkus-amazon-s3` — is therefore a full participant: its descriptor is the only
+    place its conditional dependencies (the SDK transport extensions) are declared, so a scan
+    limited to the direct artifacts never activates them and the async client they produce
+    is missing at augmentation.
+
+    The scan walks the lock graph's closure of the direct artifacts, so every jar Quarkus
+    would open is opened here too. Each jar is discarded once its descriptor has been read:
+    the closure is the whole runtime classpath, and keeping it extracted would cost gigabytes
+    for a few properties files.
+    """
     descriptors = {}
-    for index in range(len(direct_artifacts)):
-        key = direct_artifacts[index]
+    candidates = sorted(_closure(direct_artifacts, indexes.by_key).keys())
+    for index in range(len(candidates)):
+        key = candidates[index]
         node = indexes.by_key[key]
         runtime_coordinate = _canonical_coordinate(node["coordinates"])
         if node["coordinates"]["type"] not in ["jar", "bundle", "test-jar"]:
@@ -973,9 +989,11 @@ def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
         output = "descriptor-scan/{}".format(index)
         rctx.extract(artifact, output)
         descriptor_path = rctx.path(output + "/META-INF/quarkus-extension.properties")
-        if not descriptor_path.exists:
+        props = _properties(rctx.read(descriptor_path)) if descriptor_path.exists else None
+        rctx.delete(output)
+        rctx.delete(artifact)
+        if props == None:
             continue
-        props = _properties(rctx.read(descriptor_path))
         deployment = props.get("deployment-artifact", "").strip()
         if not deployment:
             fail("Quarkus extension descriptor in {} has no deployment-artifact property".format(artifact))
@@ -1049,6 +1067,43 @@ def _catalog_nodes(selected, indexes, repo_paths):
         })
     return nodes
 
+def _build_time_artifact_key(coordinate):
+    """Maps a declared build-time artifact to the lock's coordinate key.
+
+    Declarations are `groupId:artifactId` (the platform BOM supplies the version) or
+    `groupId:artifactId:version`; the lock keys a plain jar by `groupId:artifactId`.
+    """
+    parts = coordinate.split(":")
+    if len(parts) not in [2, 3] or not parts[0] or not parts[1]:
+        fail("Invalid build-time artifact '{}': expected groupId:artifactId or groupId:artifactId:version".format(coordinate))
+    return parts[0] + ":" + parts[1]
+
+def _validate_build_time_artifacts(declared, indexes, build_roots):
+    """Rejects a declared build-time artifact that no descriptor in the lock names.
+
+    The workspace declares these artifacts in its Maven install for one reason only: a
+    descriptor scanned from the lock's runtime closure names them (deployment artifacts,
+    conditional dependencies) or rules_quarkus itself needs them (the dev-mode bootstrap).
+    Maven cannot reach any of them from the application's own dependencies, so an entry
+    nothing names would sit in the lock forever. The converse — a descriptor naming an
+    artifact the lock lacks — fails where the roots are resolved.
+    """
+    unjustified = []
+    for coordinate in declared:
+        key = _build_time_artifact_key(coordinate)
+        if key not in indexes.by_key:
+            fail("Build-time artifact '{}' is absent from the Maven lock; repin after changing maven.install".format(coordinate))
+        if key not in build_roots:
+            unjustified.append(coordinate)
+    if unjustified:
+        fail(
+            "Build-time artifacts that no Quarkus extension descriptor in the lock's runtime closure " +
+            "names as a deployment artifact or conditional dependency, and that are not the dev-mode " +
+            "bootstrap: {}. Remove them from build_time_artifacts and maven.install, then repin".format(
+                ", ".join(unjustified),
+            ),
+        )
+
 def _materialize_locked_maven_graph(rctx):
     """Builds every generated catalog from the rules_jvm_external Maven lock."""
     lock_data = json.decode(rctx.read(rctx.attr.lock_file))
@@ -1075,6 +1130,7 @@ def _materialize_locked_maven_graph(rctx):
     core_selected = _closure(core_roots, indexes.by_key)
 
     build_roots = {key: True for key in deployment_roots + conditional_roots + core_roots}
+    _validate_build_time_artifacts(rctx.attr.build_time_artifacts, indexes, build_roots)
     runtime_catalog["directArtifacts"] = [key for key in runtime_catalog["directArtifacts"] if key not in build_roots]
 
     files = {}
@@ -1196,6 +1252,9 @@ _rules_quarkus_repo = repository_rule(
             default = [MAVEN_CENTRAL],
             doc = "Maven repository URLs used by Bazel's checksum-verified downloader.",
         ),
+        "build_time_artifacts": attr.string_list(
+            doc = "Workspace-declared descriptor-named artifacts, validated against the descriptor scan.",
+        ),
         "lock_file": attr.label(doc = "rules_jvm_external v3 lock file used for the runtime catalog."),
         "platform_boms": attr.string_list(mandatory = True, doc = "Quarkus platform BOMs in G:A:V form."),
         "platform_properties": attr.string_dict(doc = "Explicit Quarkus platform property overrides."),
@@ -1247,6 +1306,7 @@ def _quarkus_impl(mctx):
         "platform_properties": tc.platform_properties,
     }
     repo_attrs["lock_file"] = tc.lock_file
+    repo_attrs["build_time_artifacts"] = tc.build_time_artifacts
 
     _rules_quarkus_repo(**repo_attrs)
 
@@ -1254,6 +1314,13 @@ _toolchain_tag = tag_class(
     attrs = {
         "artifact_repositories": attr.string_list(
             doc = "Maven repositories containing every artifact in lock_file.",
+        ),
+        "build_time_artifacts": attr.string_list(
+            doc = "The artifacts the workspace added to its Maven install only because Quarkus " +
+                  "descriptors name them: deployment artifacts, conditional dependencies, and " +
+                  "the dev-mode bootstrap. Each is groupId:artifactId or groupId:artifactId:version. " +
+                  "Repository setup fails when an entry is named by no descriptor in the lock's " +
+                  "runtime closure, so the list cannot go stale.",
         ),
         "lock_file": attr.label(
             doc = "Path to a rules_jvm_external v3 maven_install.json for descriptor-driven extension discovery.",
