@@ -23,9 +23,11 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.jar.Attributes;
 import java.util.jar.Manifest;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.jboss.logging.Logger;
@@ -44,6 +46,8 @@ import org.jboss.logging.Logger;
 public final class DevModeLauncher {
 
   private static final Logger LOGGER = Logger.getLogger(DevModeLauncher.class);
+
+  private static final Path SRC_MAIN = Path.of("src", "main");
 
   private DevModeLauncher() {}
 
@@ -271,14 +275,16 @@ public final class DevModeLauncher {
     context.setBaseName(config.appName() != null ? config.appName() : "quarkus-app");
     context.setArgs(new String[0]);
 
-    // Use workspaceDir as the project root so the Dev UI "Workspace" tab
-    // displays the user's actual source tree instead of Bazel's output directory.
-    Path projectRoot = config.workspaceDir() != null ? config.workspaceDir() : config.outputDir();
+    // The project root is a directory in the user's source tree, not Bazel's output directory,
+    // so that the Dev UI "Workspace" tab shows the real sources. Prefer the application's own
+    // module over the workspace root: extensions look for a Maven layout there.
+    Path workspaceRoot = config.workspaceDir() != null ? config.workspaceDir() : config.outputDir();
     if (config.workspaceDir() == null) {
       LOGGER.warn(
           "Workspace directory not set. Dev UI workspace tab will not show source files."
               + " Use 'bazel run' to launch dev mode.");
     }
+    Path projectRoot = applicationModuleRoot(config, workspaceRoot).orElse(workspaceRoot);
     context.setProjectDir(projectRoot.toAbsolutePath().toFile());
 
     // Platform properties for SmallRye Config expression resolution
@@ -287,6 +293,43 @@ public final class DevModeLauncher {
 
     context.setApplicationRoot(buildAppModuleInfo(config, projectRoot));
     return context;
+  }
+
+  /**
+   * The Maven-layout root of the module owning the application: the parent of the {@code src/main}
+   * directory that holds its declared sources and resources.
+   *
+   * <p>Quarkus takes the build target directory from the dev context, and an extension that wants
+   * the project it is building for walks up from there looking for a {@code src/main} marker —
+   * Web Bundler's project scanner does, and reports no project root at all when the walk reaches
+   * the filesystem root. A Bazel workspace root has no Maven layout, so the walk has to start
+   * inside the application's own module. {@code quarkus_app} treats its first dep as the
+   * application and the rule emits source and resource directories in dep order, which makes the
+   * first entry with a {@code src/main} ancestor that module.
+   *
+   * <p>A module outside the workspace is not the application's: the directories are resolved
+   * against the workspace root before they reach the launcher, so anything else is a relative
+   * path that resolved against the current directory instead.
+   */
+  // Visible for testing
+  static Optional<Path> applicationModuleRoot(QuarkifierConfig config, Path workspaceRoot) {
+    Path workspace = workspaceRoot.toAbsolutePath();
+    return Stream.concat(config.sourceDirs().stream(), config.resources().stream())
+        .map(DevModeLauncher::mavenLayoutRoot)
+        .flatMap(Optional::stream)
+        .filter(root -> root.startsWith(workspace))
+        .findFirst();
+  }
+
+  /** The module a {@code src/main} path belongs to, or empty when there is no such ancestor. */
+  private static Optional<Path> mavenLayoutRoot(Path directory) {
+    for (Path path = directory.toAbsolutePath(); path != null; path = path.getParent()) {
+      if (path.endsWith(SRC_MAIN)) {
+        // src/main is two elements, so the module is the grandparent.
+        return Optional.ofNullable(path.getParent()).map(Path::getParent);
+      }
+    }
+    return Optional.empty();
   }
 
   /** Builds the {@link DevModeContext.ModuleInfo} for the application root. */

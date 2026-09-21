@@ -156,6 +156,50 @@ class DevModeLauncherTest {
   }
 
   @Test
+  void buildDevModeContext_setsProjectDir_fromApplicationModule() {
+    var config =
+        devConfig(
+            "--workspace-dir", "/home/user/project",
+            "--source-dirs", "/home/user/project/app/src/main/java",
+            "--resources", "/home/user/project/app/src/main/resources");
+
+    var context = DevModeLauncher.buildDevModeContext(config);
+
+    var moduleRoot = Path.of("/home/user/project/app");
+    assertEquals(moduleRoot.toFile(), context.getProjectDir());
+    assertEquals(moduleRoot.toString(), context.getApplicationRoot().getProjectDirectory());
+    assertEquals(
+        moduleRoot.resolve("target").toString(), context.getApplicationRoot().getTargetDir());
+  }
+
+  /** The application module is the first declared one: the rule emits them in dep order. */
+  @Test
+  void buildDevModeContext_setsProjectDir_fromFirstModule_whenSeveralContributeSources() {
+    var config =
+        devConfig(
+            "--workspace-dir",
+            "/home/user/project",
+            "--source-dirs",
+            "/home/user/project/app/src/main/java,/home/user/project/lib/src/main/java");
+
+    var context = DevModeLauncher.buildDevModeContext(config);
+
+    assertEquals(Path.of("/home/user/project/app").toFile(), context.getProjectDir());
+  }
+
+  @Test
+  void buildDevModeContext_setsProjectDir_fromWorkspaceDir_whenModuleIsOutsideIt() {
+    var config =
+        devConfig(
+            "--workspace-dir", "/home/user/project",
+            "--source-dirs", "/elsewhere/app/src/main/java");
+
+    var context = DevModeLauncher.buildDevModeContext(config);
+
+    assertEquals(Path.of("/home/user/project").toFile(), context.getProjectDir());
+  }
+
+  @Test
   void buildDevModeContext_withClassesDir_usesClassesDirForClassesPath() {
     var classesDir = Path.of("/tmp/mutable-classes");
     var config =

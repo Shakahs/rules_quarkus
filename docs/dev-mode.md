@@ -167,6 +167,27 @@ from the validated v1 model and exact extension descriptors. The old empty
 `PlatformImportsImpl`, artifact-ID runner-parent-first repair, and classpath
 inference paths have been removed.
 
+## Project Root
+
+`DevModeContext`'s project directory — and with it the `target/` directory Quarkus
+writes build metrics to — is the application module's own directory, not the
+workspace root: the first declared source or resource directory with a `src/main`
+ancestor, which is the application's module because `quarkus_app` takes its first
+dep as the application and the rule emits directories in dep order. It falls back
+to the workspace root when no declared directory follows the Maven layout, and to
+the output directory when there is no workspace root (dev mode launched without
+`bazel run`).
+
+The module, rather than the workspace root, because an extension that needs the
+project it is building for walks up from the build target directory looking for a
+`src/main` marker. Web Bundler's project scanner does, and a workspace root has no
+Maven layout, so the walk runs to the filesystem root and the scanner reports no
+project — after which `WebDependenciesProcessor#installDependencies` produces
+nothing and bundling fails on a null `InstalledWebDependenciesBuildItem`. The test
+lifecycle avoids the whole question by fabricating a Maven-layout project directory
+per action (`test_launcher.sh.tpl`), which dev mode cannot do: its project
+directory is the tree the developer edits.
+
 ## Source Directory Flow
 
 1. `_collect_java_source_dirs()` in the Starlark rule finds `src/main/java` markers in dep source files
