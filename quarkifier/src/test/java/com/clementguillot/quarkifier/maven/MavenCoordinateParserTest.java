@@ -14,7 +14,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Tests for {@link MavenCoordinateParser} covering standard Maven repo paths, Bazel processed_
- * prefixed paths, and Coursier-style short paths (fallback).
+ * prefixed paths, and short fallback paths.
  */
 class MavenCoordinateParserTest {
 
@@ -193,10 +193,10 @@ class MavenCoordinateParserTest {
     var mavenPath = Path.of("/repo/io/quarkus/quarkus-arc/3.27.4/processed_quarkus-arc-3.27.4.jar");
     var mavenCoords = MavenCoordinateParser.parse(mavenPath);
 
-    var coursierPath = Path.of("jars/quarkus-arc-3.27.4.jar");
-    var coursierCoords = MavenCoordinateParser.parse(coursierPath);
+    var shortPath = Path.of("jars/quarkus-arc-3.27.4.jar");
+    var shortCoords = MavenCoordinateParser.parse(shortPath);
 
-    assertEquals(mavenCoords.artifactId(), coursierCoords.artifactId());
-    assertEquals(mavenCoords.version(), coursierCoords.version());
+    assertEquals(mavenCoords.artifactId(), shortCoords.artifactId());
+    assertEquals(mavenCoords.version(), shortCoords.version());
   }
 }

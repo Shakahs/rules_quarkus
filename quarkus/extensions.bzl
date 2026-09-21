@@ -1,33 +1,15 @@
 """Bzlmod module extension for configuring the Quarkus toolchain.
 
 Scans the exact runtime jars pinned by maven_install.json for Quarkus extension
-descriptors and resolves their declared deployment artifacts automatically.
-The quarkifier deploy jar is downloaded from GitHub releases or overridden
-with a local build.
+descriptors and materializes their declared build-time artifacts from that
+same lock with Bazel's checksum-verified Maven downloader.
 
 Produces a single generated repository (@rules_quarkus) containing:
   - quarkus/defs.bzl: public API macros (quarkus_app, quarkus_test, quarkus_integration_test)
-  - quarkifier/: the quarkifier tool jar
-  - deployment/: deployment jars resolved via Coursier
+  - deployment/: Maven-locked deployment jars
 """
 
-load("//quarkus/private:versions.bzl", "COURSIER_SHA256", "COURSIER_URL", "GITHUB_OWNER", "GITHUB_REPO", "MAVEN_CENTRAL", "QUARKIFIER_SHA256", "RULES_VERSION", "SUPPORTED_VERSIONS")
-
-_DEFAULT_EXTENSION_GROUP_PREFIXES = ["io.quarkus", "io.quarkiverse."]
-
-# The JVM subset of Coursier's default artifact types (Resolution.defaultTypes
-# also carries maven-plugin, eclipse-plugin, hk2, orbit, scala-jar and klib),
-# pinned so every fetch in this file agrees on the set. Omitting "test-jar"
-# here would silently drop extension dependencies declared with
-# <type>test-jar</type>, which passing --artifact-type at all opts out of.
-_CLASSPATH_ARTIFACT_TYPES = "jar,bundle,test-jar"
-
-# Deployment resolution additionally needs the native helper binaries some
-# extensions declare (protoc and its plugins ship as <type>exe</type>), which
-# CodeGenProviders execute during generation. Conditional and runtime
-# resolution stay classpath-only: a non-JAR file there has no java_import to
-# land in and would fail catalog normalization.
-_DEPLOYMENT_ARTIFACT_TYPES = _CLASSPATH_ARTIFACT_TYPES + ",exe"
+load("//quarkus/private:versions.bzl", "MAVEN_CENTRAL", "SUPPORTED_VERSIONS")
 
 # ---- Version helpers ----
 
@@ -115,7 +97,13 @@ def _resolved_coordinate_keys(artifact_key, artifact, dependency_coordinate_keys
     authoritative whenever it contains matching entries.
     """
     if len(artifact_key.split(":")) > 2:
-        return [artifact_key]
+        prefix = artifact_key + ":"
+        concrete_keys = [
+            key
+            for key in dependency_coordinate_keys
+            if key == artifact_key or key.startswith(prefix)
+        ]
+        return sorted(concrete_keys) if concrete_keys else [artifact_key]
 
     prefix = artifact_key + ":"
     graph_keys = [
@@ -132,8 +120,8 @@ def _resolved_coordinate_keys(artifact_key, artifact, dependency_coordinate_keys
     file_kind = shasums.keys()[0]
     return [artifact_key if file_kind == "jar" else artifact_key + ":jar:" + file_kind]
 
-def _runtime_catalog(lock_data, resolver_report = None):
-    """Normalizes lock identities plus an optional Coursier-resolved Maven graph."""
+def _runtime_catalog(lock_data):
+    """Normalizes the graph selected by the authoritative Maven lock."""
     lock_version = str(lock_data.get("version", ""))
     if lock_version != "3":
         fail("Unsupported rules_jvm_external lock version '{}'; application-model fidelity requires v3".format(lock_version))
@@ -174,62 +162,7 @@ def _runtime_catalog(lock_data, resolver_report = None):
             fail("Invalid dependency list for '{}' in maven lock file".format(node["coordinateKey"]))
         node["dependencies"] = sorted([base_to_resolved.get(dep, dep) for dep in direct_dependencies])
 
-    if resolver_report != None:
-        raw_nodes = resolver_report.get("dependencies", [])
-        if type(raw_nodes) != "list":
-            fail("Invalid Coursier runtime report: 'dependencies' must be an array")
-        report_to_key = {}
-        nodes_by_key = {}
-        for node in nodes:
-            # The lock graph is intentionally not the fallback once a Maven
-            # resolver report is present: nodes absent from the report were
-            # pruned by Maven optionality/exclusions and must stay edge-less.
-            node["dependencies"] = []
-            node["exclusions"] = []
-            node["optional"] = False
-            fields = node["coordinates"]
-            canonical = "{}:{}:{}:{}:{}".format(
-                fields["groupId"],
-                fields["artifactId"],
-                fields["classifier"],
-                fields["type"],
-                fields["version"],
-            )
-            report_coordinate = _coursier_artifact(canonical).report
-            if report_coordinate in report_to_key:
-                fail("Runtime lock coordinates collapse to duplicate Coursier identity '{}'".format(report_coordinate))
-            report_to_key[report_coordinate] = node["coordinateKey"]
-            nodes_by_key[node["coordinateKey"]] = node
-
-        resolved_edges = {}
-        for raw_node in raw_nodes:
-            if type(raw_node) != "dict":
-                fail("Invalid Coursier runtime report: dependency entries must be objects")
-            coordinate = raw_node.get("coord", "")
-            coordinate_key = report_to_key.get(coordinate)
-            if not coordinate_key:
-                # The pinned rules_jvm_external graph is authoritative for explicit
-                # exclusions. Coursier resolves raw POM semantics and may therefore
-                # report artifacts deliberately excluded from the Bazel lock.
-                continue
-            if coordinate_key not in resolved_edges:
-                resolved_edges[coordinate_key] = {}
-            node = nodes_by_key[coordinate_key]
-            exclusions = raw_node.get("exclusions", [])
-            if type(exclusions) != "list":
-                fail("Invalid Coursier runtime report: 'exclusions' must be an array")
-            node["exclusions"] = sorted(exclusions)
-            node["optional"] = raw_node.get("optional", False)
-            if type(node["optional"]) != "bool":
-                fail("Invalid Coursier runtime report: 'optional' must be a boolean")
-            for dependency in raw_node.get("directDependencies", []):
-                dependency_key = report_to_key.get(dependency)
-                if dependency_key:
-                    resolved_edges[coordinate_key][dependency_key] = True
-        for coordinate_key in resolved_edges:
-            nodes_by_key[coordinate_key]["dependencies"] = sorted(resolved_edges[coordinate_key])
-
-    conflicts = (resolver_report or lock_data).get("conflict_resolution", {})
+    conflicts = lock_data.get("conflict_resolution", {})
     if type(conflicts) != "dict":
         fail("Invalid rules_jvm_external v3 lock: 'conflict_resolution' must be an object")
     ordered_conflicts = {key: conflicts[key] for key in sorted(conflicts)}
@@ -248,103 +181,6 @@ def _runtime_catalog(lock_data, resolver_report = None):
         "schemaVersion": "quarkus-bazel-runtime-catalog-v1",
     }
 
-def _runtime_resolution_roots(lock_data, lock_catalog):
-    """Returns the minimal Coursier roots, including relocated direct inputs."""
-    nodes_by_key = {node["coordinateKey"]: node for node in lock_catalog["nodes"]}
-    direct_keys = {key: True for key in lock_catalog["directArtifacts"]}
-    redundant_direct_keys = {}
-    for root_key in lock_catalog["directArtifacts"]:
-        reachable = {key: True for key in nodes_by_key[root_key]["dependencies"]}
-
-        # Starlark deliberately has no unbounded loops. At most N passes
-        # are needed to close a graph with N nodes, including cycles.
-        for _ in lock_catalog["nodes"]:
-            changed = False
-            for dependency_key in sorted(reachable.keys()):
-                dependency_node = nodes_by_key.get(dependency_key)
-                if dependency_node:
-                    for transitive_key in dependency_node["dependencies"]:
-                        if transitive_key not in reachable:
-                            reachable[transitive_key] = True
-                            changed = True
-            if not changed:
-                break
-        for dependency_key in reachable:
-            if dependency_key in direct_keys and dependency_key != root_key:
-                redundant_direct_keys[dependency_key] = True
-
-    roots = []
-    seen_roots = {}
-    for coordinate_key in lock_catalog["directArtifacts"]:
-        if coordinate_key in redundant_direct_keys:
-            continue
-        fields = nodes_by_key[coordinate_key]["coordinates"]
-        root = _coursier_artifact("{}:{}:{}:{}:{}".format(
-            fields["groupId"],
-            fields["artifactId"],
-            fields["classifier"],
-            fields["type"],
-            fields["version"],
-        )).fetch
-        if root not in seen_roots:
-            seen_roots[root] = True
-            roots.append(root)
-
-    # rules_jvm_external records an input artifact under its requested coordinates,
-    # but a Maven relocation stores only the destination artifact in `artifacts`.
-    # Such an input cannot appear in `directArtifacts`; its selected version is
-    # nevertheless retained in `conflict_resolution` and must remain a Coursier root
-    # so that Coursier can follow the relocation.
-    input_artifacts = lock_data.get("__INPUT_ARTIFACTS_HASH", {})
-    conflicts = lock_data.get("conflict_resolution", {})
-    if type(input_artifacts) != "dict" or type(conflicts) != "dict":
-        fail("Invalid rules_jvm_external v3 lock: input artifacts and conflict resolution must be objects")
-    for input_key in sorted(input_artifacts):
-        if input_key in direct_keys or input_key in nodes_by_key:
-            continue
-        selected = conflicts.get(input_key)
-        if not selected:
-            # Repositories and imported BOMs are also part of the input signature,
-            # but are not runtime artifacts and have no selected artifact coordinate.
-            continue
-        root = _coursier_artifact(selected).fetch
-        if root not in seen_roots:
-            seen_roots[root] = True
-            roots.append(root)
-
-    return roots
-
-def _write_runtime_catalog(rctx, java, lock_data = None, lock_catalog = None):
-    if not rctx.attr.lock_file:
-        catalog = {
-            "conflictResolution": {},
-            "directArtifacts": [],
-            "nodes": [],
-            "schemaVersion": "quarkus-bazel-runtime-catalog-v1",
-        }
-    else:
-        if lock_data == None:
-            lock_data = json.decode(rctx.read(rctx.attr.lock_file))
-        if lock_catalog == None:
-            lock_catalog = _runtime_catalog(lock_data)
-        roots = _runtime_resolution_roots(lock_data, lock_catalog)
-        forced_versions = _forced_versions_from_catalog(lock_catalog)
-        if roots:
-            rctx.report_progress("Resolving Maven-faithful runtime dependency graph")
-            result = _coursier_fetch(
-                rctx,
-                java,
-                roots,
-                "model/runtime-resolution.json",
-                forced_versions = forced_versions,
-            )
-            if result.return_code != 0:
-                fail("Failed to resolve runtime dependency graph via Coursier:\n" + result.stderr)
-            catalog = _runtime_catalog(lock_data, json.decode(rctx.read("model/runtime-resolution.json")))
-        else:
-            catalog = lock_catalog
-    rctx.file("model/runtime-catalog-v1.json", json.encode(catalog) + "\n")
-
 def _platform_bom(coordinate):
     """Parses the public G:A:V platform BOM notation into transport coordinates."""
     parts = coordinate.split(":")
@@ -362,7 +198,6 @@ def _write_platform_catalog(rctx):
     """Downloads exact Quarkus platform properties and writes their model catalog."""
     imports = []
     property_files = []
-    repository = rctx.attr.repository_url.removesuffix("/")
     for coordinate in rctx.attr.platform_boms:
         bom = _platform_bom(coordinate)
         properties_artifact = bom["artifactId"] + "-quarkus-platform-properties"
@@ -374,7 +209,7 @@ def _write_platform_catalog(rctx):
         repo_path = "model/platform-properties/" + relative_path
         rctx.report_progress("Resolving Quarkus platform properties for " + coordinate)
         rctx.download(
-            url = repository + "/" + relative_path,
+            url = [repository.removesuffix("/") + "/" + relative_path for repository in rctx.attr.artifact_repositories],
             output = repo_path,
         )
         imports.append(bom)
@@ -391,656 +226,14 @@ def _write_platform_catalog(rctx):
 # Pure helpers exported only for Starlark unit tests. Production consumers use
 # the generated catalog file targets, never these implementation functions.
 runtime_catalog_for_test = _runtime_catalog
-runtime_resolution_roots_for_test = _runtime_resolution_roots
 maven_target_name_for_test = _maven_target_name
-
-def _coursier_artifact(coordinate):
-    """Converts Quarkus GAV/GATV/GACTV notation to Coursier fetch/report forms."""
-    parts = coordinate.split(":")
-    if len(parts) == 3:
-        if not parts[0] or not parts[1] or not parts[2]:
-            fail("Invalid Maven coordinate '{}': required component is blank".format(coordinate))
-        return struct(fetch = coordinate, report = coordinate)
-    if len(parts) == 4:
-        group_id, artifact_id, artifact_type, version = parts
-        if not group_id or not artifact_id or not artifact_type or not version:
-            fail("Invalid Maven coordinate '{}': required component is blank".format(coordinate))
-        return struct(
-            fetch = "{}:{}:{},type={}".format(group_id, artifact_id, version, artifact_type),
-            report = coordinate,
-        )
-    if len(parts) == 5:
-        group_id, artifact_id, classifier, artifact_type, version = parts
-        if not group_id or not artifact_id or not artifact_type or not version:
-            fail("Invalid Maven coordinate '{}': required component is blank".format(coordinate))
-        attributes = []
-        if classifier:
-            attributes.append("classifier=" + classifier)
-        if artifact_type != "jar":
-            attributes.append("type=" + artifact_type)
-        fetch = "{}:{}:{}".format(group_id, artifact_id, version)
-        if attributes:
-            fetch += "," + ",".join(attributes)
-        if classifier:
-            report = "{}:{}:{}:{}:{}".format(group_id, artifact_id, artifact_type, classifier, version)
-        elif artifact_type == "jar":
-            report = "{}:{}:{}".format(group_id, artifact_id, version)
-        else:
-            report = "{}:{}:{}:{}".format(group_id, artifact_id, artifact_type, version)
-        return struct(fetch = fetch, report = report)
-    fail("Invalid Maven coordinate '{}': expected G:A:V, G:A:T:V, or G:A:C:T:V".format(coordinate))
-
-def _runtime_discovery_artifacts(lock_data):
-    """Returns exact intransitive Coursier coordinates for every locked runtime jar."""
-    if str(lock_data.get("version", "")) != "3":
-        fail("Unsupported rules_jvm_external lock version '{}'; extension discovery requires v3".format(lock_data.get("version", "")))
-    artifacts = lock_data.get("artifacts", {})
-    dependencies = lock_data.get("dependencies", {})
-    if type(artifacts) != "dict" or type(dependencies) != "dict":
-        fail("Invalid rules_jvm_external v3 lock: 'artifacts' and 'dependencies' must be objects")
-    dependency_coordinate_keys = _lock_coordinate_keys(lock_data, dependencies)
-
-    result = []
-    for artifact_key in sorted(artifacts):
-        artifact = artifacts[artifact_key]
-        if type(artifact) != "dict" or not artifact.get("version"):
-            fail("Invalid artifact entry '{}' in maven lock file".format(artifact_key))
-        for coordinate_key in _resolved_coordinate_keys(artifact_key, artifact, dependency_coordinate_keys):
-            fields = _coordinate_fields(coordinate_key, artifact["version"])
-            if fields["type"] != "jar" or fields["classifier"] in ["sources", "javadoc"]:
-                continue
-            coordinate = "{}:{}:{}".format(fields["groupId"], fields["artifactId"], fields["version"])
-            if fields["classifier"]:
-                coordinate += ",classifier=" + fields["classifier"]
-            result.append(coordinate)
-    return result
-
-coursier_artifact_for_test = _coursier_artifact
-runtime_discovery_artifacts_for_test = _runtime_discovery_artifacts
-
-# ---- Quarkifier tool resolution ----
-
-def _build_quarkifier_from_source(rctx):
-    """Builds the quarkifier deploy jar from a local source checkout.
-
-    Runs a nested Bazel build with a dedicated output base so it does not
-    clash with the outer build holding the workspace lock.
-
-    The build runs on every fetch — a previous `test -f` fast path silently
-    reused stale jars after quarkifier source edits, making bugfixes appear
-    to have no effect during development. With a warm nested output base the
-    no-change build is a no-op in seconds. The quarkifier source tree is
-    additionally watched so edits invalidate this repository and trigger a
-    refetch in the first place.
-    """
-    src_workspace = str(rctx.path(rctx.attr.quarkifier_source_dir).dirname)
-
-    # Invalidate this repo when quarkifier sources change (Bazel 7.1+). The
-    # watched subtree must not contain build outputs: watching the whole
-    # source workspace would self-invalidate on every nested build (it hosts
-    # .bazel-nested-build/ and the bazel-* convenience symlinks).
-    if hasattr(rctx, "watch_tree"):
-        rctx.watch_tree(src_workspace + "/quarkifier")
-
-    nested_output_base = src_workspace + "/.bazel-nested-build"
-
-    bin_result = rctx.execute(
-        ["bazel", "--output_base=" + nested_output_base, "info", "bazel-bin", "--lockfile_mode=off"],
-        working_directory = src_workspace,
-        timeout = 60,
-    )
-    bazel_bin = bin_result.stdout.strip() if bin_result.return_code == 0 else src_workspace + "/bazel-bin"
-
-    target = rctx.attr.quarkifier_build_target
-    deploy_jar = bazel_bin + "/" + target.lstrip("/").replace(":", "/")
-
-    rctx.report_progress("Building {} from source".format(target))
-    build_result = rctx.execute(
-        ["bazel", "--output_base=" + nested_output_base, "build", target, "--lockfile_mode=off"],
-        working_directory = src_workspace,
-        # Generous: a cold nested build fetches the maven deps over the network.
-        timeout = 600,
-    )
-    if build_result.return_code != 0:
-        fail("Failed to build {} in {}:\n{}".format(target, src_workspace, build_result.stderr))
-    if not rctx.path(deploy_jar).exists:
-        fail("Quarkifier deploy jar not found at: {}".format(deploy_jar))
-
-    # Copy (not symlink): a symlink into the nested bazel-bin dangles after a
-    # `bazel clean` in the source checkout, with no repo invalidation to heal it.
-    if rctx.execute(["mkdir", "-p", "quarkifier"]).return_code != 0:
-        fail("Failed to create the quarkifier directory in the repository")
-    copy_result = rctx.execute(["cp", deploy_jar, "quarkifier/tool.jar"])
-    if copy_result.return_code != 0:
-        fail("Failed to copy the quarkifier deploy jar into the repository: " + copy_result.stderr)
-
-def _resolve_quarkifier_tool(rctx):
-    """Materializes quarkifier/tool.jar from a local build or a release download.
-
-    Release downloads are verified against the checksum patched into
-    QUARKIFIER_SHA256 by release_prep.sh (or supplied by the user via
-    quarkus.toolchain(quarkifier_sha256 = ...)). Without a checksum the
-    download still works, but the computed hash is printed so it can be
-    pinned — the jar is executable code run by build actions, dev mode, and
-    tests, so unverified use should be a deliberate choice.
-    """
-    if rctx.attr.quarkifier_source_dir:
-        _build_quarkifier_from_source(rctx)
-    elif rctx.attr.quarkifier_url:
-        if rctx.attr.quarkifier_sha256:
-            rctx.download(
-                url = rctx.attr.quarkifier_url,
-                output = "quarkifier/tool.jar",
-                sha256 = rctx.attr.quarkifier_sha256,
-            )
-        else:
-            result = rctx.download(url = rctx.attr.quarkifier_url, output = "quarkifier/tool.jar")
-
-            # buildifier: disable=print
-            print((
-                "\nWARNING: rules_quarkus downloaded the quarkifier tool jar without " +
-                "checksum verification:\n    {url}\n" +
-                "Pin it in MODULE.bazel:\n" +
-                "    quarkus.toolchain(quarkifier_sha256 = \"{sha}\", ...)\n"
-            ).format(url = rctx.attr.quarkifier_url, sha = result.sha256))
-    else:
-        fail("Either quarkifier_source_dir or quarkifier_url must be set")
-
-# ---- Deployment jar resolution via Coursier ----
-
-# bin/java of the rules_java-managed remote JDKs, keyed by host platform.
-# These are the same repos --java_runtime_version=remotejdk_17 resolves to,
-# so when the build already uses a remote JDK no extra download happens.
-_REMOTE_JDK_JAVA = {
-    "linux-aarch64": Label("@remotejdk17_linux_aarch64//:bin/java"),
-    "linux-x86_64": Label("@remotejdk17_linux//:bin/java"),
-    "macos-aarch64": Label("@remotejdk17_macos_aarch64//:bin/java"),
-    "macos-x86_64": Label("@remotejdk17_macos//:bin/java"),
-}
-
-def _host_platform_key(os):
-    """Maps an os struct to a _REMOTE_JDK_JAVA key, or None if unsupported."""
-    name = os.name.lower()
-    if "mac" in name:
-        platform = "macos"
-    elif "linux" in name:
-        platform = "linux"
-    else:
-        return None
-    arch = os.arch.lower()
-    if arch in ["aarch64", "arm64"]:
-        cpu = "aarch64"
-    elif arch in ["x86_64", "amd64"]:
-        cpu = "x86_64"
-    else:
-        return None
-    return platform + "-" + cpu
-
-# The quarkifier is compiled at --java_language_version=17 (tools/java17.bazelrc),
-# so the JVM that runs extension discovery must be at least 17. Coursier itself
-# targets 8, but both run on the JVM _find_java returns, so 17 is the floor.
-_MIN_JAVA_VERSION = 17
-
-def _leading_int(value):
-    """Parses the leading digits of `value`, or None when it has none."""
-    digits = ""
-    for char in value.elems():
-        if not char.isdigit():
-            break
-        digits += char
-    return int(digits) if digits else None
-
-def _java_major_version(output):
-    """Extracts the major Java version from `java -XshowSettings:properties -version`.
-
-    Prefers the `java.specification.version` property, which is stable across
-    vendors, and falls back to the `version "..."` banner when the property is
-    absent (some non-HotSpot JVMs ignore -XshowSettings). Java 8 reports "1.8"
-    in both forms while 9+ report the major number directly. Returns None when
-    neither form is present or parseable.
-    """
-    banner_version = None
-    for raw_line in output.split("\n"):
-        line = raw_line.strip()
-        value = None
-        if line.startswith("java.specification.version"):
-            parts = line.split("=", 1)
-            if len(parts) == 2:
-                value = parts[1].strip()
-        elif banner_version == None and line.find("version \"") != -1:
-            value = line.split("version \"", 1)[1]
-        if value == None:
-            continue
-        if value.startswith("1."):
-            value = value[len("1."):]
-        version = _leading_int(value)
-        if version == None:
-            continue
-        if line.startswith("java.specification.version"):
-            return version
-        banner_version = version
-    return banner_version
-
-def _java_version(rctx, java):
-    """Returns the major version of `java`, or None when it fails to run.
-
-    The version lands on stderr for JDK 8-14 and on stdout for some later
-    builds, so both streams are parsed.
-    """
-    result = rctx.execute([java, "-XshowSettings:properties", "-version"], timeout = 30)
-    if result.return_code != 0:
-        return None
-    return _java_major_version(result.stdout + "\n" + result.stderr)
-
-def _find_java(rctx):
-    """Locates a JVM to run Coursier and the quarkifier with.
-
-    Repository rules run in the fetch phase, before toolchain resolution, so
-    --java_runtime_version cannot be honored here. Order: JAVA_HOME, then a
-    `java` from PATH (the macOS /usr/bin/java stub fails without an installed
-    JDK), then the hermetic fallback JDK (fetched lazily).
-
-    Local JVMs must be _MIN_JAVA_VERSION or newer: the quarkifier fails with
-    UnsupportedClassVersionError on older ones. A too-old JVM is skipped in
-    favor of the fallback just like a missing one, so hosts whose default JDK
-    predates 17 keep building without any user action.
-    """
-    rejected = []
-
-    java_home = rctx.getenv("JAVA_HOME")
-    if java_home:
-        java = java_home + "/bin/java"
-        if rctx.path(java).exists:
-            version = _java_version(rctx, java)
-            if version != None and version >= _MIN_JAVA_VERSION:
-                return java
-            if version != None:
-                rejected.append("JAVA_HOME ({}) is Java {}".format(java, version))
-
-    java = rctx.which("java")
-    if java:
-        java = str(java)
-        version = _java_version(rctx, java)
-        if version != None and version >= _MIN_JAVA_VERSION:
-            return java
-        if version != None:
-            rejected.append("`java` on PATH ({}) is Java {}".format(java, version))
-
-    if rctx.attr.fallback_java:
-        return str(rctx.path(rctx.attr.fallback_java))
-
-    if rejected:
-        fail(("rules_quarkus needs Java {min} or newer to run the quarkifier during " +
-              "extension discovery, but {found}. Point JAVA_HOME at a Java {min}+ JDK " +
-              "(no bundled JDK fallback is available for this host platform).").format(
-            min = _MIN_JAVA_VERSION,
-            found = " and ".join(rejected),
-        ))
-    fail(("No Java runtime found: rules_quarkus needs Java {min} or newer to run Coursier " +
-          "and the quarkifier. Set JAVA_HOME or add java to PATH " +
-          "(no bundled JDK fallback is available for this host platform).").format(
-        min = _MIN_JAVA_VERSION,
-    ))
-
-java_major_version_for_test = _java_major_version
-min_java_version_for_test = _MIN_JAVA_VERSION
-
-def _coursier_fetch(rctx, java, artifacts, report_path, forced_versions = [], artifact_types = _CLASSPATH_ARTIFACT_TYPES):
-    """Runs a batched Coursier fetch.
-
-    Timeout scales with artifact count: cold-cache batch fetches for large
-    projects can legitimately exceed a flat 300 s.
-    """
-    args = [
-        java,
-        "-jar",
-        "deployment/coursier.jar",
-        "fetch",
-        "--artifact-type",
-        artifact_types,
-        "--json-output-file",
-        report_path,
-        "--repository",
-        rctx.attr.repository_url,
-    ]
-    for forced_version in forced_versions:
-        args.extend(["--force-version", forced_version])
-    return rctx.execute(
-        args + artifacts,
-        timeout = max(300, len(artifacts) * 60),
-    )
-
-def _jar_paths_from_fetch_output(stdout, seen):
-    """Extracts unique jar paths from Coursier fetch stdout, updating `seen`."""
-    jars = []
-    for raw_line in stdout.strip().split("\n"):
-        line = raw_line.strip()
-        if line.endswith(".jar") and line not in seen:
-            seen[line] = True
-            jars.append(line)
-    return jars
-
-def _artifact_paths_from_report(report):
-    """Returns every unique resolved artifact path, including non-JAR classifiers."""
-    paths = []
-    seen = {}
-    for dependency in report.get("dependencies", []):
-        path = dependency.get("file", "")
-        if path and path not in seen:
-            seen[path] = True
-            paths.append(path)
-    return paths
-
-def _coursier_report_coordinate(coordinate):
-    """Converts Coursier report order (G:A:T:C:V) to Quarkus G:A:C:T:V.
-
-    Coursier echoes a POM's explicit default type (`G:A:jar:V`) and empty
-    classifier (`G:A:T::V`). Both collapse to the canonical form so one artifact
-    keeps a single catalog identity.
-    """
-    parts = coordinate.split(":")
-    if len(parts) == 5 and not parts[3]:
-        parts = parts[:3] + parts[4:]
-    if len(parts) == 4 and parts[2] == "jar":
-        parts = parts[:2] + parts[3:]
-    if len(parts) <= 4:
-        return ":".join(parts)
-    if len(parts) == 5:
-        return "{}:{}:{}:{}:{}".format(parts[0], parts[1], parts[3], parts[2], parts[4])
-    fail("Invalid Coursier report coordinate '{}'".format(coordinate))
-
-def _fetch_runtime_jars_for_discovery(rctx, java):
-    """Fetches every locked runtime artifact exactly and intransitively.
-
-    The lock graph, rather than Maven POM resolution, selects the runtime jars.
-    Batches bound argv size for large workspaces. Coursier's content cache keeps
-    this scan cheap and avoids duplicating jars in the generated repository.
-    """
-    artifacts = rctx.attr.runtime_discovery_artifacts
-    if not artifacts:
-        return struct(artifacts = [], jars = [])
-    rctx.report_progress("Resolving locked runtime jars for Quarkus extension discovery")
-    seen = {}
-    jars = []
-    resolved_artifacts = []
-    batch_size = 100
-    for offset in range(0, len(artifacts), batch_size):
-        report_path = "model/runtime-discovery-resolution-{}.json".format(offset)
-        rctx.file(report_path, "")
-        args = [
-            java,
-            "-jar",
-            "deployment/coursier.jar",
-            "fetch",
-            "--artifact-type",
-            _CLASSPATH_ARTIFACT_TYPES,
-            "--json-output-file",
-            report_path,
-            "--repository",
-            rctx.attr.repository_url,
-        ]
-        for artifact in artifacts[offset:offset + batch_size]:
-            args.extend(["--intransitive", artifact])
-        result = rctx.execute(args, timeout = max(300, min(batch_size, len(artifacts) - offset) * 30))
-        if result.return_code != 0:
-            fail("Failed to fetch locked runtime artifacts for extension descriptor discovery:\n" + result.stderr)
-        jars.extend(_jar_paths_from_fetch_output(result.stdout, seen))
-        report = json.decode(rctx.read(report_path))
-        for dependency in report.get("dependencies", []):
-            coordinate = dependency.get("coord", "")
-            file = dependency.get("file", "")
-            if not coordinate or not file:
-                fail("Invalid Coursier runtime discovery report entry: coord and file are required")
-            resolved_artifacts.append({
-                "coordinate": _coursier_report_coordinate(coordinate),
-                "file": file,
-            })
-    return struct(artifacts = resolved_artifacts, jars = jars)
-
-def _discover_deployment_artifacts(rctx, java, runtime_artifacts):
-    """Reads exact deployment and conditional metadata from runtime jars."""
-    artifacts_file = "model/runtime-discovery-artifacts.tsv"
-    output_file = "model/discovered-deployment-artifacts.txt"
-    descriptors_file = "model/extension-descriptors-v1.json"
-    artifact_lines = [artifact["coordinate"] + "\t" + artifact["file"] for artifact in runtime_artifacts]
-    rctx.file(artifacts_file, "\n".join(artifact_lines) + ("\n" if artifact_lines else ""))
-    result = rctx.execute(
-        [
-            java,
-            "-jar",
-            "quarkifier/tool.jar",
-            "discover-extensions",
-            "--artifacts-file",
-            artifacts_file,
-            "--output",
-            output_file,
-            "--descriptor-output",
-            descriptors_file,
-        ],
-        timeout = max(300, len(runtime_artifacts) * 5),
-    )
-    if result.return_code != 0:
-        fail("Failed to discover Quarkus extension descriptors from the locked runtime graph:\n" + result.stderr)
-
-    descriptor_coordinates = []
-    for line in rctx.read(output_file).split("\n"):
-        coordinate = line.strip()
-        if coordinate:
-            descriptor_coordinates.append(coordinate)
-
-    # Core deployment is required even for a minimal application. It normally
-    # comes from quarkus-core's own descriptor; keeping it as an explicit root
-    # also supports lock-less toolchains without falling back to name guessing.
-    core = "io.quarkus:quarkus-core-deployment:" + rctx.attr.quarkus_version
-    if core not in descriptor_coordinates:
-        descriptor_coordinates.append(core)
-
-    fetch_roots = []
-    report_roots = []
-    seen = {}
-    for coordinate in descriptor_coordinates:
-        artifact = _coursier_artifact(coordinate)
-        if artifact.report in seen:
-            continue
-        seen[artifact.report] = True
-        fetch_roots.append(artifact.fetch)
-        report_roots.append(artifact.report)
-    return struct(
-        descriptors = json.decode(rctx.read(descriptors_file)),
-        fetch_roots = fetch_roots,
-        report_roots = report_roots,
-    )
-
-def _descriptor_map(catalog):
-    if catalog.get("schemaVersion") != "quarkus-extension-descriptors-v1":
-        fail("Unsupported extension descriptor catalog schema '{}'".format(catalog.get("schemaVersion")))
-    extensions = catalog.get("extensions", [])
-    if type(extensions) != "list":
-        fail("Invalid extension descriptor catalog: extensions must be an array")
-    result = {}
-    for extension in extensions:
-        runtime = extension.get("runtimeArtifact", "")
-        deployment = extension.get("deploymentArtifact", "")
-        if not runtime or not deployment:
-            fail("Invalid extension descriptor catalog: runtimeArtifact and deploymentArtifact are required")
-        previous = result.get(runtime)
-        if previous != None and previous != extension:
-            fail("Runtime artifact '{}' has conflicting extension descriptors".format(runtime))
-        result[runtime] = extension
-    return result
-
-def _conditional_roots(descriptors):
-    roots = {}
-    for runtime in sorted(descriptors):
-        descriptor = descriptors[runtime]
-        for coordinate in descriptor.get("conditionalDependencies", []) + descriptor.get("conditionalDevDependencies", []):
-            roots[_coursier_artifact(coordinate).report] = coordinate
-    return roots
-
-def _forced_versions_from_catalog(catalog):
-    """Extracts sorted G:A:V forced-version pins from a runtime catalog.
-
-    Args:
-        catalog: A runtime catalog dict with a "nodes" list.
-
-    Returns:
-        A sorted list of "groupId:artifactId:version" strings, one per module.
-    """
-    forced = {}
-    for node in catalog["nodes"]:
-        fields = node["coordinates"]
-        module = fields["groupId"] + ":" + fields["artifactId"]
-        value = module + ":" + fields["version"]
-        previous = forced.get(module)
-        if previous != None and previous != value:
-            fail("Runtime lock selects multiple versions for module '{}'".format(module))
-        forced[module] = value
-    return [forced[module] for module in sorted(forced)]
-
-def _scan_resolved_extensions(rctx, java, report, pass_index):
-    artifacts_file = "model/conditional-runtime-artifacts-{}.tsv".format(pass_index)
-    deployments_file = "model/conditional-deployments-{}.txt".format(pass_index)
-    descriptors_file = "model/conditional-descriptors-{}.json".format(pass_index)
-    lines = []
-    for dependency in report.get("dependencies", []):
-        coordinate = dependency.get("coord", "")
-        file = dependency.get("file", "")
-        if not coordinate or not file:
-            fail("Invalid Coursier conditional report entry: coord and file are required")
-        lines.append(_coursier_report_coordinate(coordinate) + "\t" + file)
-    rctx.file(artifacts_file, "\n".join(lines) + ("\n" if lines else ""))
-    result = rctx.execute(
-        [
-            java,
-            "-jar",
-            "quarkifier/tool.jar",
-            "discover-extensions",
-            "--artifacts-file",
-            artifacts_file,
-            "--output",
-            deployments_file,
-            "--descriptor-output",
-            descriptors_file,
-        ],
-        timeout = max(300, len(lines) * 5),
-    )
-    if result.return_code != 0:
-        fail("Failed to discover nested conditional extension descriptors:\n" + result.stderr)
-    return json.decode(rctx.read(descriptors_file))
-
-def _resolve_conditional_runtime(rctx, java, initial_catalog, forced_versions):
-    """Resolves the complete normal+dev candidate universe to a stable descriptor graph."""
-    descriptors = _descriptor_map(initial_catalog)
-    resolved_roots = {}
-    final_report = None
-    converged = False
-    max_passes = 32
-    for pass_index in range(max_passes):
-        roots = _conditional_roots(descriptors)
-        if not roots:
-            converged = True
-            break
-        report_path = "conditional/conditional-resolution-{}.json".format(pass_index)
-        rctx.file(report_path, "")
-        result = _coursier_fetch(
-            rctx,
-            java,
-            [_coursier_artifact(roots[key]).fetch for key in sorted(roots)],
-            report_path,
-            forced_versions = forced_versions,
-        )
-        if result.return_code != 0:
-            fail("Failed to resolve descriptor-declared conditional dependencies:\n" + result.stderr)
-        report = json.decode(rctx.read(report_path))
-        discovered = _descriptor_map(_scan_resolved_extensions(rctx, java, report, pass_index))
-        for runtime in discovered:
-            previous = descriptors.get(runtime)
-            if previous != None and previous != discovered[runtime]:
-                fail("Runtime artifact '{}' has conflicting extension descriptors".format(runtime))
-            descriptors[runtime] = discovered[runtime]
-        final_report = report
-        next_roots = _conditional_roots(descriptors)
-        if sorted(next_roots.keys()) == sorted(roots.keys()):
-            resolved_roots = next_roots
-            converged = True
-            break
-        resolved_roots = next_roots
-    if not converged:
-        fail("Conditional dependency descriptor discovery did not converge after {} passes".format(max_passes))
-    return struct(
-        descriptors = [descriptors[key] for key in sorted(descriptors)],
-        report = final_report,
-        roots = resolved_roots,
-    )
-
-def _dev_mode_artifacts(quarkus_version):
-    """Returns the upstream-equivalent roots for the dev process system classpath."""
-    return [
-        _coursier_artifact("io.quarkus:quarkus-bootstrap-gradle-resolver:" + quarkus_version).fetch,
-        _coursier_artifact("io.quarkus:quarkus-bootstrap-maven-resolver:" + quarkus_version).fetch,
-        _coursier_artifact("io.quarkus:quarkus-core-deployment:" + quarkus_version).fetch,
-    ]
-
-dev_mode_artifacts_for_test = _dev_mode_artifacts
-
-def _resolve_dev_mode_jars(rctx, java, dev_mode_artifacts):
-    """Resolves the complete infrastructure classpath for the dev process.
-
-    This mirrors Quarkus Gradle's QUARKUS_BOOTSTRAP_RESOLVER_CONFIGURATION: both
-    bootstrap resolvers plus quarkus-core-deployment and their transitive closures.
-
-    Fails hard on error: continuing would materialize an empty deployment:core
-    target and silently break dev mode at runtime.
-    """
-    rctx.report_progress("Resolving dev mode infrastructure dependencies")
-    result = _coursier_fetch(rctx, java, dev_mode_artifacts, "deployment/dev-mode-resolution.json")
-    if result.return_code != 0:
-        fail("Failed to resolve dev mode infrastructure dependencies ({}) via Coursier:\n{}".format(
-            ", ".join(dev_mode_artifacts),
-            result.stderr,
-        ))
-    return _jar_paths_from_fetch_output(result.stdout, {})
-
-def _resolve_deployment_jars(rctx, java, deployment_artifacts, report_roots, core_jar_paths):
-    """Resolves all deployment artifacts in a single batched Coursier call.
-
-    Batching avoids spawning a separate JVM per artifact (6-10x faster).
-    Every root came from an extension descriptor, so a missing root is a hard
-    model error: dropping it would silently skip the extension's build steps.
-
-    Returns:
-        The list of all resolved jar paths, starting with core_jar_paths.
-    """
-    rctx.report_progress("Resolving deployment artifacts")
-    report_path = "deployment/deployment-resolution.json"
-    result = _coursier_fetch(
-        rctx,
-        java,
-        deployment_artifacts,
-        report_path,
-        artifact_types = _DEPLOYMENT_ARTIFACT_TYPES,
-    )
-    if result.return_code != 0:
-        fail(("Failed to resolve descriptor-declared Quarkus deployment artifacts via Coursier. " +
-              "No deployment root can be skipped safely:\n{}").format(result.stderr))
-
-    seen_jars = {p: True for p in core_jar_paths}
-    report = json.decode(rctx.read(report_path))
-    all_artifacts = _artifact_paths_from_report(report)
-    return struct(
-        artifacts = [path for path in all_artifacts if not path.endswith(".jar")],
-        dropped = [],
-        jars = list(core_jar_paths) + _jar_paths_from_fetch_output(result.stdout, seen_jars),
-        report_path = report_path,
-        roots = report_roots,
-    )
 
 def _maven_relative_path(jar_path):
     """Returns the jar path relative to its Maven repository root.
 
     Preserving the Maven directory structure (group/artifact/version/file) in
     the copied deployment jars is required for Dev UI version extraction.
-    Coursier cache paths contain a "maven2" component; everything after it is
+    Download paths may contain a "maven2" component; everything after it is
     the Maven-layout path. Falls back to the bare file name.
     """
     parts = jar_path.replace("\\", "/").split("/")
@@ -1075,11 +268,11 @@ jar_target_name_for_test = _jar_target_name
 def _copy_jars_into_repo(rctx, copies):
     """Copies resolved jars into the repository directory.
 
-    The repository must own its files: symlinks into the machine-global
-    Coursier cache dangle when the cache is cleaned (with no repo
+    The repository must own its files: symlinks into an external downloader
+    cache can dangle when the cache is cleaned (with no repository
     invalidation to recover), and later cache mutations change action inputs
     underneath Bazel — a remote-cache poisoning vector. Copying snapshots the
-    verified download while the global cache keeps making fetches fast.
+    checksum-verified Maven download into the generated repository.
 
     Args:
         rctx: Repository context.
@@ -1207,157 +400,6 @@ def _write_conditional_build(rctx, all_jars):
     """Materializes conditional candidates without placing them on the public runtime graph."""
     return _write_jar_build(rctx, "conditional", all_jars)
 
-def _normalize_catalog(report, repo_paths, label, remap_coordinates = False, prune_unresolved_edges = False):
-    """Merges and deduplicates a Coursier dependency report into canonical nodes.
-
-    Args:
-        report: Parsed Coursier JSON report dict.
-        repo_paths: Dict mapping absolute jar path → repo-relative path.
-        label: Human-readable label for error messages (e.g. "deployment", "conditional").
-        remap_coordinates: When True, applies _coursier_report_coordinate() to
-            coordinates, dependencies, and conflict-resolution entries from
-            Coursier's G:A:T:C:V order to Quarkus' G:A:C:T:V order.
-        prune_unresolved_edges: Omits POM edges whose artifacts are outside the
-            selected report. Conditional resolution can reference artifacts
-            already supplied by the locked runtime graph.
-
-    Returns:
-        Tuple of (nodes list, conflicts dict).
-    """
-    raw_nodes = report.get("dependencies", [])
-    if type(raw_nodes) != "list":
-        fail("Invalid {} Coursier report: 'dependencies' must be an array".format(label))
-
-    selected_coordinates = {}
-    for raw_node in raw_nodes:
-        if type(raw_node) != "dict":
-            fail("Invalid {} Coursier report: dependency entries must be objects".format(label))
-        coordinate = raw_node.get("coord", "")
-        if remap_coordinates:
-            coordinate = _coursier_report_coordinate(coordinate)
-        if coordinate:
-            selected_coordinates[coordinate] = True
-
-    merged = {}
-    for raw_node in raw_nodes:
-        if type(raw_node) != "dict":
-            fail("Invalid {} Coursier report: dependency entries must be objects".format(label))
-        coordinate = raw_node.get("coord", "")
-        file = raw_node.get("file", "")
-        if not coordinate or not file:
-            fail("Invalid {} Coursier report: 'coord' and 'file' are required".format(label))
-        if remap_coordinates:
-            coordinate = _coursier_report_coordinate(coordinate)
-        repo_path = repo_paths.get(file)
-        if not repo_path:
-            fail("{} report path '{}' was not copied into the generated repository".format(label.capitalize(), file))
-
-        node = merged.get(coordinate)
-        if not node:
-            node = {"dependencies": {}, "exclusions": {}, "repoPath": repo_path}
-            merged[coordinate] = node
-        elif node["repoPath"] != repo_path:
-            fail("{} coordinate '{}' resolved to multiple files".format(label.capitalize(), coordinate))
-
-        for dependency in raw_node.get("directDependencies", []):
-            dep_key = _coursier_report_coordinate(dependency) if remap_coordinates else dependency
-            if not prune_unresolved_edges or dep_key in selected_coordinates:
-                node["dependencies"][dep_key] = True
-        for exclusion in raw_node.get("exclusions", []):
-            node["exclusions"][exclusion] = True
-
-    nodes = []
-    for coordinate in sorted(merged):
-        node = merged[coordinate]
-        nodes.append({
-            "coordinate": coordinate,
-            "dependencies": sorted(node["dependencies"]),
-            "exclusions": sorted(node["exclusions"]),
-            "repoPath": node["repoPath"],
-        })
-
-    conflicts = report.get("conflict_resolution", {})
-    if type(conflicts) != "dict":
-        fail("Invalid {} Coursier report: 'conflict_resolution' must be an object".format(label))
-    if remap_coordinates:
-        conflicts = {
-            _coursier_report_coordinate(key): _coursier_report_coordinate(value)
-            for key, value in conflicts.items()
-        }
-    sorted_conflicts = {key: conflicts[key] for key in sorted(conflicts)}
-    return nodes, sorted_conflicts
-
-def _conditional_catalog(resolution, repo_paths):
-    report = resolution.report
-    if report == None:
-        return {
-            "conflictResolution": {},
-            "extensions": resolution.descriptors,
-            "nodes": [],
-            "resolver": "coursier",
-            "resolverReportVersion": "",
-            "roots": [],
-            "schemaVersion": "quarkus-bazel-conditional-catalog-v1",
-        }
-    nodes, conflicts = _normalize_catalog(
-        report,
-        repo_paths,
-        "conditional",
-        remap_coordinates = True,
-        prune_unresolved_edges = True,
-    )
-    return {
-        "conflictResolution": conflicts,
-        "extensions": resolution.descriptors,
-        "nodes": nodes,
-        "resolver": "coursier",
-        "resolverReportVersion": report.get("version", ""),
-        "roots": sorted(resolution.roots.values()),
-        "schemaVersion": "quarkus-bazel-conditional-catalog-v1",
-    }
-
-def _write_conditional_catalog(rctx, resolution, repo_paths):
-    rctx.file("model/conditional-catalog-v1.json", json.encode(_conditional_catalog(resolution, repo_paths)) + "\n")
-
-conditional_catalog_for_test = _conditional_catalog
-coursier_report_coordinate_for_test = _coursier_report_coordinate
-
-def _deployment_catalog(report, roots, dropped_roots, repo_paths):
-    """Normalizes a Coursier report and removes machine-global cache paths.
-
-    Dependency edges may point at artifacts already supplied by the locked
-    runtime graph even when Coursier does not emit a second deployment file.
-    Those edges are kept: the model assembler resolves them against the runtime
-    catalog and fails on the ones that resolve in neither.
-    """
-    nodes, conflicts = _normalize_catalog(
-        report,
-        repo_paths,
-        "deployment",
-        remap_coordinates = True,
-    )
-    return {
-        "conflictResolution": conflicts,
-        "droppedRoots": sorted([_coursier_report_coordinate(root) for root in dropped_roots]),
-        "nodes": nodes,
-        "resolver": "coursier",
-        "resolverReportVersion": report.get("version", ""),
-        "roots": sorted([_coursier_report_coordinate(root) for root in roots]),
-        "schemaVersion": "quarkus-bazel-deployment-catalog-v1",
-    }
-
-def _write_deployment_catalog(rctx, resolution, repo_paths):
-    """Writes the normalized Coursier deployment graph catalog."""
-    catalog = _deployment_catalog(
-        json.decode(rctx.read(resolution.report_path)),
-        resolution.roots,
-        resolution.dropped,
-        repo_paths,
-    )
-    rctx.file("model/deployment-catalog-v1.json", json.encode(catalog) + "\n")
-
-deployment_catalog_for_test = _deployment_catalog
-
 # ---- Generated @rules_quarkus//quarkus:defs.bzl ----
 
 _DEFS_BZL_TEMPLATE = """\
@@ -1392,7 +434,7 @@ load("@com_clementguillot_rules_quarkus//quarkus/private:versions.bzl", "DEFAULT
 load("@rules_java//java:java_library.bzl", "java_library")
 
 _QUARKUS_VERSION = "{version}"
-_QUARKIFIER_TOOL = "@rules_quarkus//quarkifier:tool.jar"
+_QUARKIFIER_TOOL = "@com_clementguillot_rules_quarkus//quarkifier:quarkifier_{minor}_deploy.jar"
 _DEPLOYMENT_DEPS = "@rules_quarkus//deployment:all"
 _DEPLOYMENT_ARTIFACTS = "@rules_quarkus//deployment:artifacts"
 _CORE_DEPLOYMENT_DEPS = "@rules_quarkus//deployment:core"
@@ -1786,6 +828,322 @@ def quarkus_extension_runtime(name, group_id, version, runtime_target, deploymen
     )
 """
 
+# ---- Lock-driven Maven repository materialization ----
+
+def _canonical_coordinate(fields):
+    """Returns Quarkus G:A[:C:T]:V notation for catalog coordinates."""
+    group_id = fields["groupId"]
+    artifact_id = fields["artifactId"]
+    classifier = fields.get("classifier", "")
+    artifact_type = fields.get("type", "jar")
+    version = fields["version"]
+    if not classifier and artifact_type == "jar":
+        return "{}:{}:{}".format(group_id, artifact_id, version)
+    if not classifier:
+        return "{}:{}:{}:{}".format(group_id, artifact_id, artifact_type, version)
+    return "{}:{}:{}:{}:{}".format(group_id, artifact_id, classifier, artifact_type, version)
+
+def _normalize_coordinate(coordinate):
+    """Normalizes descriptor coordinates to Quarkus G:A[:C:T]:V notation."""
+    parts = coordinate.strip().split(":")
+    if len(parts) == 3 and all(parts):
+        return coordinate.strip()
+    if len(parts) == 4 and all(parts):
+        if parts[2] == "jar":
+            return "{}:{}:{}".format(parts[0], parts[1], parts[3])
+        return coordinate.strip()
+    if len(parts) == 5 and parts[0] and parts[1] and parts[3] and parts[4]:
+        if not parts[2] and parts[3] == "jar":
+            return "{}:{}:{}".format(parts[0], parts[1], parts[4])
+        if not parts[2]:
+            return "{}:{}:{}:{}".format(parts[0], parts[1], parts[3], parts[4])
+        return coordinate.strip()
+    fail("Invalid Maven coordinate '{}': expected G:A:V, G:A:T:V, or G:A:C:T:V".format(coordinate))
+
+def _property_lines(content):
+    """Joins Java-properties continuation lines used by Quarkus descriptors."""
+    logical = []
+    pending = ""
+    for physical in content.split("\n"):
+        line = physical.rstrip("\r")
+        slash_count = 0
+        for char in reversed(line.elems()):
+            if char != "\\":
+                break
+            slash_count += 1
+        continued = slash_count % 2 == 1
+        if continued:
+            line = line[:-1]
+        pending += line.lstrip() if pending else line
+        if not continued:
+            logical.append(pending)
+            pending = ""
+    if pending:
+        logical.append(pending)
+    return logical
+
+def _properties(content):
+    """Parses the descriptor properties needed by rules_quarkus."""
+    result = {}
+    for raw_line in _property_lines(content):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        separator = -1
+        escaped = False
+        for index in range(len(line)):
+            char = line[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char in ["=", ":", " ", "\t"]:
+                separator = index
+                break
+        if separator < 0:
+            key = line
+            value = ""
+        else:
+            key = line[:separator]
+            value = line[separator:]
+            value = value.lstrip("=: \t")
+        result[key.replace("\\:", ":").replace("\\=", "=")] = value.replace("\\:", ":").replace("\\=", "=")
+    return result
+
+def _words(value):
+    return [word for word in value.replace("\t", " ").split(" ") if word]
+
+def _host_maven_classifier(os, available):
+    os_name = "osx" if "mac" in os.name.lower() else "linux" if "linux" in os.name.lower() else "windows" if "windows" in os.name.lower() else ""
+    arch = os.arch.lower()
+    cpu = "aarch_64" if arch in ["aarch64", "arm64"] else "x86_64" if arch in ["x86_64", "amd64"] else ""
+    candidate = os_name + "-" + cpu
+    return candidate if candidate in available else None
+
+def _locked_artifact_download(rctx, lock_data, node, output_root):
+    """Downloads one exact Maven-lock artifact through Bazel's verified downloader."""
+    fields = node["coordinates"]
+    coordinate_key = node["coordinateKey"]
+    artifacts = lock_data["artifacts"]
+    artifact_key = coordinate_key if coordinate_key in artifacts else fields["groupId"] + ":" + fields["artifactId"]
+    if artifact_key not in artifacts and fields["type"] != "jar":
+        artifact_key += ":" + fields["type"]
+    artifact = artifacts.get(artifact_key)
+    if artifact == None:
+        fail("Maven lock has no artifact file entry for '{}'".format(coordinate_key))
+    shasums = artifact.get("shasums", {})
+    classifier = fields["classifier"]
+    sha_key = classifier or ("jar" if fields["type"] in ["jar", "bundle", "test-jar"] else fields["type"])
+    if sha_key not in shasums:
+        if len(shasums) == 1:
+            sha_key = shasums.keys()[0]
+            classifier = "" if sha_key == "jar" else sha_key
+        else:
+            sha_key = _host_maven_classifier(rctx.os, shasums)
+            if sha_key == None:
+                fail("Maven artifact '{}' has no file for host {} {}".format(coordinate_key, rctx.os.name, rctx.os.arch))
+            classifier = sha_key
+    extension = "jar" if fields["type"] in ["jar", "bundle", "test-jar"] else fields["type"]
+    suffix = ("-" + classifier) if classifier else ""
+    filename = "{}-{}{}.{}".format(fields["artifactId"], fields["version"], suffix, extension)
+    relative_path = "{}/{}/{}/{}".format(
+        fields["groupId"].replace(".", "/"),
+        fields["artifactId"],
+        fields["version"],
+        filename,
+    )
+    output = output_root + "/" + relative_path
+    rctx.download(
+        url = [repository.removesuffix("/") + "/" + relative_path for repository in rctx.attr.artifact_repositories],
+        output = output,
+        sha256 = shasums[sha_key],
+    )
+    return str(rctx.path(output))
+
+def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
+    """Reads Quarkus descriptors directly from Maven-locked runtime candidates."""
+    descriptors = {}
+    for index in range(len(direct_artifacts)):
+        key = direct_artifacts[index]
+        node = indexes.by_key[key]
+        runtime_coordinate = _canonical_coordinate(node["coordinates"])
+        if node["coordinates"]["type"] not in ["jar", "bundle", "test-jar"]:
+            continue
+        artifact = _locked_artifact_download(rctx, lock_data, node, "descriptor-artifacts")
+        output = "descriptor-scan/{}".format(index)
+        rctx.extract(artifact, output)
+        descriptor_path = rctx.path(output + "/META-INF/quarkus-extension.properties")
+        if not descriptor_path.exists:
+            continue
+        props = _properties(rctx.read(descriptor_path))
+        deployment = props.get("deployment-artifact", "").strip()
+        if not deployment:
+            fail("Quarkus extension descriptor in {} has no deployment-artifact property".format(artifact))
+        runtime = _normalize_coordinate(runtime_coordinate)
+        descriptor = {
+            "conditionalDependencies": [_normalize_coordinate(value) for value in _words(props.get("conditional-dependencies", ""))],
+            "conditionalDevDependencies": [_normalize_coordinate(value) for value in _words(props.get("conditional-dev-dependencies", ""))],
+            "dependencyConditions": _words(props.get("dependency-condition", "")),
+            "deploymentArtifact": _normalize_coordinate(deployment),
+            "runtimeArtifact": runtime,
+        }
+        previous = descriptors.get(runtime)
+        if previous != None and previous != descriptor:
+            fail("Runtime artifact '{}' has conflicting extension descriptors".format(runtime))
+        descriptors[runtime] = descriptor
+    return [descriptors[key] for key in sorted(descriptors)]
+
+def _catalog_indexes(catalog):
+    by_key = {node["coordinateKey"]: node for node in catalog["nodes"]}
+    by_coordinate = {_canonical_coordinate(node["coordinates"]): node for node in catalog["nodes"]}
+    return struct(by_coordinate = by_coordinate, by_key = by_key)
+
+def _root_keys(coordinates, indexes, label):
+    keys = []
+    seen = {}
+    for coordinate in coordinates:
+        normalized = _normalize_coordinate(coordinate)
+        node = indexes.by_coordinate.get(normalized)
+        if node == None:
+            fail("{} '{}' is absent from the Maven lock; add it to maven.install artifacts and repin".format(label, normalized))
+        key = node["coordinateKey"]
+        if key not in seen:
+            seen[key] = True
+            keys.append(key)
+    return keys
+
+def _closure(root_keys, nodes_by_key):
+    selected = {key: True for key in root_keys}
+    for _ in nodes_by_key:
+        changed = False
+        for key in sorted(selected.keys()):
+            node = nodes_by_key.get(key)
+            if node == None:
+                fail("Maven lock graph references missing artifact '{}'".format(key))
+            for dependency in node["dependencies"]:
+                if dependency not in nodes_by_key:
+                    fail("Maven lock graph contains an unresolved edge from '{}' to '{}'".format(key, dependency))
+                if dependency not in selected:
+                    selected[dependency] = True
+                    changed = True
+        if not changed:
+            break
+    return selected
+
+def _catalog_nodes(selected, indexes, repo_paths):
+    nodes = []
+    for key in sorted(selected):
+        node = indexes.by_key[key]
+        coordinate = _canonical_coordinate(node["coordinates"])
+        artifact_path = repo_paths.get(coordinate)
+        if artifact_path == None:
+            fail("Maven-locked artifact '{}' has no materialized file".format(coordinate))
+        nodes.append({
+            "coordinate": coordinate,
+            "dependencies": [
+                _canonical_coordinate(indexes.by_key[dependency]["coordinates"])
+                for dependency in node["dependencies"]
+            ],
+            "exclusions": node["exclusions"],
+            "repoPath": artifact_path,
+        })
+    return nodes
+
+def _materialize_locked_maven_graph(rctx):
+    """Builds every generated catalog from the rules_jvm_external Maven lock."""
+    lock_data = json.decode(rctx.read(rctx.attr.lock_file))
+    runtime_catalog = _runtime_catalog(lock_data)
+    indexes = _catalog_indexes(runtime_catalog)
+    descriptors = _scan_locked_descriptors(rctx, lock_data, indexes, runtime_catalog["directArtifacts"])
+
+    deployment_coordinates = [descriptor["deploymentArtifact"] for descriptor in descriptors]
+    deployment_coordinates.append("io.quarkus:quarkus-core-deployment:" + rctx.attr.quarkus_version)
+    conditional_coordinates = []
+    for descriptor in descriptors:
+        conditional_coordinates.extend(descriptor["conditionalDependencies"])
+        conditional_coordinates.extend(descriptor["conditionalDevDependencies"])
+
+    deployment_roots = _root_keys(deployment_coordinates, indexes, "Descriptor-declared deployment artifact")
+    conditional_roots = _root_keys(conditional_coordinates, indexes, "Descriptor-declared conditional artifact")
+    core_roots = _root_keys([
+        "io.quarkus:quarkus-bootstrap-maven-resolver:" + rctx.attr.quarkus_version,
+        "io.quarkus:quarkus-core-deployment:" + rctx.attr.quarkus_version,
+    ], indexes, "Dev-mode Maven infrastructure artifact")
+
+    deployment_selected = _closure(deployment_roots + core_roots, indexes.by_key)
+    conditional_selected = _closure(conditional_roots, indexes.by_key)
+    core_selected = _closure(core_roots, indexes.by_key)
+
+    build_roots = {key: True for key in deployment_roots + conditional_roots + core_roots}
+    runtime_catalog["directArtifacts"] = [key for key in runtime_catalog["directArtifacts"] if key not in build_roots]
+
+    files = {}
+    selected_keys = dict(deployment_selected)
+    selected_keys.update(conditional_selected)
+    for key in sorted(selected_keys):
+        node = indexes.by_key[key]
+        coordinate = _canonical_coordinate(node["coordinates"])
+        files[coordinate] = _locked_artifact_download(rctx, lock_data, node, "locked-artifacts")
+
+    deployment_jars = []
+    deployment_artifacts = []
+    core_paths = {}
+    for key in sorted(deployment_selected):
+        coordinate = _canonical_coordinate(indexes.by_key[key]["coordinates"])
+        path = files.get(coordinate)
+        if path == None:
+            fail("Maven lock artifact '{}' has no Bazel file label".format(coordinate))
+        if path.endswith(".jar"):
+            deployment_jars.append(path)
+        else:
+            deployment_artifacts.append(path)
+        if key in core_selected:
+            core_paths[path] = True
+
+    conditional_jars = []
+    for key in sorted(conditional_selected):
+        coordinate = _canonical_coordinate(indexes.by_key[key]["coordinates"])
+        path = files.get(coordinate)
+        if path == None:
+            fail("Maven lock artifact '{}' has no Bazel file label".format(coordinate))
+        if path.endswith(".jar"):
+            conditional_jars.append(path)
+
+    conditional_repo_paths_by_file = _write_conditional_build(rctx, conditional_jars)
+    deployment_repo_paths_by_file = _write_deployment_build(rctx, deployment_jars, core_paths, deployment_artifacts)
+    deployment_repo_paths = {
+        coordinate: deployment_repo_paths_by_file[path]
+        for coordinate, path in files.items()
+        if path in deployment_repo_paths_by_file
+    }
+    conditional_repo_paths = {
+        coordinate: conditional_repo_paths_by_file[path]
+        for coordinate, path in files.items()
+        if path in conditional_repo_paths_by_file
+    }
+
+    deployment_catalog = {
+        "conflictResolution": {},
+        "droppedRoots": [],
+        "nodes": _catalog_nodes(deployment_selected, indexes, deployment_repo_paths),
+        "resolver": "maven",
+        "resolverReportVersion": str(lock_data.get("version", "")),
+        "roots": sorted([_canonical_coordinate(indexes.by_key[key]["coordinates"]) for key in deployment_roots]),
+        "schemaVersion": "quarkus-bazel-deployment-catalog-v1",
+    }
+    conditional_catalog = {
+        "conflictResolution": {},
+        "extensions": descriptors,
+        "nodes": _catalog_nodes(conditional_selected, indexes, conditional_repo_paths),
+        "resolver": "maven",
+        "resolverReportVersion": str(lock_data.get("version", "")),
+        "roots": sorted([_canonical_coordinate(indexes.by_key[key]["coordinates"]) for key in conditional_roots]),
+        "schemaVersion": "quarkus-bazel-conditional-catalog-v1",
+    }
+    rctx.file("model/runtime-catalog-v1.json", json.encode(runtime_catalog) + "\n")
+    rctx.file("model/deployment-catalog-v1.json", json.encode(deployment_catalog) + "\n")
+    rctx.file("model/conditional-catalog-v1.json", json.encode(conditional_catalog) + "\n")
+
 # ---- Repository rule ----
 
 def _rules_quarkus_repo_impl(rctx):
@@ -1796,65 +1154,11 @@ def _rules_quarkus_repo_impl(rctx):
       - quarkifier/tool.jar: the quarkifier deploy jar
       - deployment/: java_library targets for deployment jars
     """
-    _resolve_quarkifier_tool(rctx)
-
-    rctx.download(
-        url = COURSIER_URL,
-        sha256 = COURSIER_SHA256,
-        output = "deployment/coursier.jar",
-    )
-
-    java = _find_java(rctx)
-    runtime_discovery = _fetch_runtime_jars_for_discovery(rctx, java)
-    deployment_artifacts = _discover_deployment_artifacts(rctx, java, runtime_discovery.artifacts)
-
-    if rctx.attr.lock_file:
-        lock_data = json.decode(rctx.read(rctx.attr.lock_file))
-        lock_catalog = _runtime_catalog(lock_data)
-        forced_versions = _forced_versions_from_catalog(lock_catalog)
-    else:
-        lock_data = None
-        lock_catalog = None
-        forced_versions = []
-
-    conditional_resolution = _resolve_conditional_runtime(rctx, java, deployment_artifacts.descriptors, forced_versions)
-    deployment_fetch_roots = list(deployment_artifacts.fetch_roots)
-    deployment_report_roots = list(deployment_artifacts.report_roots)
-    seen_deployments = {coordinate: True for coordinate in deployment_report_roots}
-    for descriptor in conditional_resolution.descriptors:
-        deployment = _coursier_artifact(descriptor["deploymentArtifact"])
-        if deployment.report not in seen_deployments:
-            seen_deployments[deployment.report] = True
-            deployment_fetch_roots.append(deployment.fetch)
-            deployment_report_roots.append(deployment.report)
-    core_jar_paths = _resolve_dev_mode_jars(rctx, java, _dev_mode_artifacts(rctx.attr.quarkus_version))
-    deployment_resolution = _resolve_deployment_jars(
-        rctx,
-        java,
-        deployment_fetch_roots,
-        deployment_report_roots,
-        core_jar_paths,
-    )
-    conditional_jars = [] if conditional_resolution.report == None else _artifact_paths_from_report(conditional_resolution.report)
-    conditional_repo_paths = _write_conditional_build(rctx, conditional_jars)
-    repo_paths = _write_deployment_build(
-        rctx,
-        deployment_resolution.jars,
-        {p: True for p in core_jar_paths},
-        deployment_resolution.artifacts,
-    )
-    _write_runtime_catalog(rctx, java, lock_data = lock_data, lock_catalog = lock_catalog)
-    _write_deployment_catalog(rctx, deployment_resolution, repo_paths)
-    _write_conditional_catalog(rctx, conditional_resolution, conditional_repo_paths)
+    _materialize_locked_maven_graph(rctx)
     _write_platform_catalog(rctx)
 
     rctx.file("BUILD.bazel", content = """\
 package(default_visibility = ["//visibility:public"])
-""")
-
-    rctx.file("quarkifier/BUILD.bazel", content = """\
-package(default_visibility = ["//visibility:public"])
-exports_files(["tool.jar"])
 """)
 
     rctx.file("quarkus/BUILD.bazel", content = """\
@@ -1877,51 +1181,29 @@ filegroup(name = "platform_properties", srcs = glob(["platform-properties/**/*.p
 filegroup(name = "runtime_catalog", srcs = ["runtime-catalog-v1.json"])
 """)
 
-    rctx.file("quarkus/defs.bzl", content = _DEFS_BZL_TEMPLATE.format(version = rctx.attr.quarkus_version))
+    rctx.file(
+        "quarkus/defs.bzl",
+        content = _DEFS_BZL_TEMPLATE.format(
+            minor = _sanitize_version(_extract_minor_version(rctx.attr.quarkus_version)),
+            version = rctx.attr.quarkus_version,
+        ),
+    )
 
 _rules_quarkus_repo = repository_rule(
     implementation = _rules_quarkus_repo_impl,
     attrs = {
-        "fallback_java": attr.label(
-            allow_single_file = True,
-            doc = "bin/java of the hermetic JDK used to run Coursier when the host has no usable JVM.",
+        "artifact_repositories": attr.string_list(
+            default = [MAVEN_CENTRAL],
+            doc = "Maven repository URLs used by Bazel's checksum-verified downloader.",
         ),
         "lock_file": attr.label(doc = "rules_jvm_external v3 lock file used for the runtime catalog."),
         "platform_boms": attr.string_list(mandatory = True, doc = "Quarkus platform BOMs in G:A:V form."),
         "platform_properties": attr.string_dict(doc = "Explicit Quarkus platform property overrides."),
-        "quarkifier_build_target": attr.string(doc = "Bazel target for the per-minor deploy jar (local build mode)."),
-        "quarkifier_sha256": attr.string(doc = "SHA-256 checksum for the quarkifier jar download (release mode). Empty disables verification."),
-        "quarkifier_source_dir": attr.label(doc = "Label in the rules_quarkus source dir (local build mode)."),
-        "quarkifier_url": attr.string(doc = "URL to download the quarkifier jar from (release mode)."),
         "quarkus_version": attr.string(mandatory = True, doc = "Quarkus version."),
-        "repository_url": attr.string(default = MAVEN_CENTRAL, doc = "Maven repository URL for Coursier."),
-        "runtime_discovery_artifacts": attr.string_list(mandatory = True, doc = "Exact locked runtime coordinates to scan for Quarkus extension descriptors."),
     },
 )
 
 # ---- Module extension ----
-
-def _quarkifier_repo_attrs(tc, minor):
-    """Returns the repo attrs selecting local-build or release-download mode."""
-    if tc.quarkifier_source_dir:
-        return {
-            "quarkifier_source_dir": tc.quarkifier_source_dir,
-            "quarkifier_build_target": "//quarkifier:quarkifier_{}_deploy.jar".format(_sanitize_version(minor)),
-        }
-
-    release_tag = "v" + RULES_VERSION
-    return {
-        "quarkifier_url": "https://github.com/{}/{}/releases/download/{}/quarkifier-{}-{}.jar".format(
-            GITHUB_OWNER,
-            GITHUB_REPO,
-            release_tag,
-            minor,
-            release_tag,
-        ),
-        # User-supplied pin wins; otherwise the checksum patched into the
-        # release archive by release_prep.sh (empty in the git tree).
-        "quarkifier_sha256": tc.quarkifier_sha256 or QUARKIFIER_SHA256.get(minor, ""),
-    }
 
 def _quarkus_impl(mctx):
     # Collect toolchain tags from every module, root module first: the root's
@@ -1951,32 +1233,27 @@ def _quarkus_impl(mctx):
             ))
 
     version = tc.quarkus_version
-    minor = _validate_version(version)
+    _validate_version(version)
+
+    if not tc.lock_file:
+        fail("quarkus.toolchain(lock_file = ...) is required for Maven-owned dependency resolution")
+    lock_data = json.decode(mctx.read(tc.lock_file))
 
     repo_attrs = {
+        "artifact_repositories": tc.artifact_repositories or [MAVEN_CENTRAL],
         "name": "rules_quarkus",
         "quarkus_version": version,
         "platform_boms": tc.platform_boms or ["io.quarkus.platform:quarkus-bom:" + version],
         "platform_properties": tc.platform_properties,
-        "runtime_discovery_artifacts": _runtime_discovery_artifacts(json.decode(mctx.read(tc.lock_file))) if tc.lock_file else [],
     }
-    if tc.lock_file:
-        repo_attrs["lock_file"] = tc.lock_file
-    repo_attrs.update(_quarkifier_repo_attrs(tc, minor))
-
-    fallback_java = _REMOTE_JDK_JAVA.get(_host_platform_key(mctx.os))
-    if fallback_java:
-        repo_attrs["fallback_java"] = fallback_java
+    repo_attrs["lock_file"] = tc.lock_file
 
     _rules_quarkus_repo(**repo_attrs)
 
 _toolchain_tag = tag_class(
     attrs = {
-        # Retained for source compatibility. Descriptor discovery is exact and
-        # intentionally does not filter extensions by Maven group anymore.
-        "extension_group_prefixes": attr.string_list(
-            default = _DEFAULT_EXTENSION_GROUP_PREFIXES,
-            doc = "Deprecated compatibility option; extension descriptors are discovered in every locked runtime jar.",
+        "artifact_repositories": attr.string_list(
+            doc = "Maven repositories containing every artifact in lock_file.",
         ),
         "lock_file": attr.label(
             doc = "Path to a rules_jvm_external v3 maven_install.json for descriptor-driven extension discovery.",
@@ -1986,23 +1263,6 @@ _toolchain_tag = tag_class(
         ),
         "platform_properties": attr.string_dict(
             doc = "Additional or overriding Quarkus platform properties. Custom platform release-info properties are supported.",
-        ),
-        "quarkifier_sha256": attr.string(
-            doc = """\
-SHA-256 checksum of the quarkifier release jar, overriding the checksum
-bundled in the release archive. Normally not needed: released versions carry
-their own checksums. Set it when consuming rules_quarkus via git_override or
-archive_override, where the bundled checksum map is empty — the build prints
-the hash to pin when verification is disabled.
-""",
-        ),
-        "quarkifier_source_dir": attr.label(
-            doc = """\
-Label pointing to a file in the rules_quarkus source directory. The parent
-directory is used to build the quarkifier deploy jar locally.
-Used for local development and e2e testing.
-Example: '@com_clementguillot_rules_quarkus//:MODULE.bazel'
-""",
         ),
         "quarkus_version": attr.string(
             mandatory = True,

@@ -42,10 +42,21 @@ def _file_record(file):
         "shortPath": file.short_path,
     }
 
+def _file_path(file):
+    return file.path
+
 def _files_attr(ctx, attr_name):
     if not hasattr(ctx.rule.files, attr_name):
         return []
     return [_file_record(file) for file in getattr(ctx.rule.files, attr_name)]
+
+def _raw_files_attr(ctx, attr_name):
+    if not hasattr(ctx.rule.files, attr_name):
+        return []
+    return list(getattr(ctx.rule.files, attr_name))
+
+def _workspace_inputs(ctx):
+    return _raw_files_attr(ctx, "srcs") + _raw_files_attr(ctx, "resources")
 
 def _edge_records(graphs, relation, scope):
     edges = []
@@ -92,30 +103,25 @@ def _maven_coordinate_keys(ctx):
             keys.append(_coordinate_key(parts[0], parts[1]))
     return keys
 
-def _extract_workspace_outputs(ctx, target, output_jars, suffix = ""):
+def _canonical_workspace_output(ctx, target, output_jars, suffix = ""):
     if target.label.workspace_name:
         return []
-    outputs = []
-    for index, jar in enumerate(output_jars):
-        index_suffix = "" if len(output_jars) == 1 else ".{}".format(index)
-        output = ctx.actions.declare_directory(
-            ctx.label.name + suffix + index_suffix + ".quarkus-classes",
-        )
-        args = ctx.actions.args()
-        args.add("x")
-        args.add(jar)
-        args.add("-d")
-        args.add(output.path)
-        ctx.actions.run(
-            executable = ctx.executable._zipper,
-            arguments = [args],
-            inputs = [jar],
-            outputs = [output],
-            mnemonic = "QuarkusWorkspaceClasses",
-            progress_message = "Extracting workspace classes for {}".format(target.label),
-        )
-        outputs.append(output)
-    return outputs
+    jars = sorted(output_jars, key = _file_path)
+    if not jars:
+        return []
+    output = ctx.actions.declare_directory(ctx.label.name + suffix + ".quarkus-classes")
+    args = ctx.actions.args()
+    args.add(output.path)
+    args.add_all(jars)
+    ctx.actions.run(
+        executable = ctx.executable._workspace_classes_merger,
+        arguments = [args],
+        inputs = jars,
+        outputs = [output],
+        mnemonic = "QuarkusWorkspaceClasses",
+        progress_message = "Normalizing workspace classes for {}".format(target.label),
+    )
+    return [output]
 
 def _target_fragment(ctx, target, edges, coordinates = None, output_jars = None, output_directories = None, suffix = ""):
     target_id = str(target.label) if not suffix else "local-deployment:" + str(target.label)
@@ -138,6 +144,7 @@ def _target_fragment(ctx, target, edges, coordinates = None, output_jars = None,
         "sources": _files_attr(ctx, "srcs"),
         "targetId": target_id,
         "targetName": target.label.name,
+        "testOnly": getattr(ctx.rule.attr, "testonly", False),
         "workspaceName": target.label.workspace_name,
     }) + "\n"
     ctx.actions.write(output = output, content = content)
@@ -170,7 +177,7 @@ def _extension_target_facts(ctx, target):
     extension = target[QuarkusExtensionInfo]
     root_edges = runtime_graph.root_edges
     runtime_outputs = target[JavaInfo].runtime_output_jars
-    workspace_outputs = _extract_workspace_outputs(ctx, target, runtime_outputs)
+    workspace_outputs = _canonical_workspace_output(ctx, target, runtime_outputs)
     direct_fragments = [_target_fragment(
         ctx,
         target,
@@ -178,7 +185,7 @@ def _extension_target_facts(ctx, target):
         coordinates = _coordinates(extension.group_id, extension.artifact_id, extension.version),
         output_directories = workspace_outputs,
     )]
-    direct_artifacts = list(runtime_outputs) + list(workspace_outputs)
+    direct_artifacts = list(runtime_outputs) + list(workspace_outputs) + _workspace_inputs(ctx)
 
     packaged_deployment_id = "local-deployment:" + str(target.label)
     dep_fragment = _target_fragment(
@@ -271,7 +278,7 @@ def _application_model_aspect_impl(target, ctx):
         direct_coordinate_keys.extend(_maven_coordinate_keys(ctx))
         root_edges = edges
         runtime_outputs = target[JavaInfo].runtime_output_jars
-        workspace_outputs = _extract_workspace_outputs(ctx, target, runtime_outputs)
+        workspace_outputs = _canonical_workspace_output(ctx, target, runtime_outputs)
         direct_fragments.append(_target_fragment(
             ctx,
             target,
@@ -280,6 +287,7 @@ def _application_model_aspect_impl(target, ctx):
         ))
         direct_artifacts.extend(runtime_outputs)
         direct_artifacts.extend(workspace_outputs)
+        direct_artifacts.extend(_workspace_inputs(ctx))
         root_ids.append(str(target.label))
     else:
         for graph in child_graphs:
@@ -305,8 +313,8 @@ quarkus_application_model_aspect = aspect(
     implementation = _application_model_aspect_impl,
     attr_aspects = ["deps", "runtime_deps", "exports", "runtime", "deployment"],
     attrs = {
-        "_zipper": attr.label(
-            default = Label("@bazel_tools//tools/zip:zipper"),
+        "_workspace_classes_merger": attr.label(
+            default = Label("//quarkifier:workspace_classes_merger"),
             cfg = "exec",
             executable = True,
         ),
@@ -335,6 +343,13 @@ def collect_deployment_model_fragments(deps):
 def collect_deployment_model_artifacts(deps):
     """Collects artifacts referenced by local deployment fragments."""
     return _collect_graph_depset(deps, "deployment_artifacts")
+
+def collect_all_model_artifacts(deps):
+    """Collects every artifact path that may be referenced by the assembled model."""
+    return depset(transitive = [
+        collect_model_artifacts(deps),
+        collect_deployment_model_artifacts(deps),
+    ])
 
 def has_maven_artifact(deps, group_id, artifact_id):
     """Checks whether the resolved dependency graph contains a Maven artifact.

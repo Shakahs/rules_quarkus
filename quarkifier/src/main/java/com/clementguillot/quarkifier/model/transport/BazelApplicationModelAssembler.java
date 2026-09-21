@@ -317,7 +317,13 @@ public final class BazelApplicationModelAssembler {
           kind = NodeKind.MAVEN;
         }
         List<String> paths =
-            fragment.runtimeOutputJars().stream().map(FileReference::path).sorted().toList();
+            (fragment.workspaceTarget() && !fragment.outputDirectories().isEmpty()
+                    ? fragment.outputDirectories()
+                    : fragment.runtimeOutputJars())
+                .stream()
+                .map(FileReference::path)
+                .sorted()
+                .toList();
         MutableNode node =
             new MutableNode(
                 id,
@@ -454,12 +460,9 @@ public final class BazelApplicationModelAssembler {
     /**
      * Materializes relationships after resolver reachability has been fixed.
      *
-     * <p>A Coursier JSON report is a flattened graph. If the same artifact is reached through two
-     * paths with different exclusions, the report can omit an edge that is valid in one of those
-     * path contexts. Bazel's aspect still observes that relationship on the actual classpath. We
-     * therefore retain such an aspect edge only when both endpoints survived resolver reachability.
-     * This cannot reintroduce an optional or excluded artifact: a resolver-pruned target is absent
-     * from {@code retainedTargets}.
+     * <p>The aspect observes relationships on the actual Bazel classpath. We retain an aspect edge
+     * only when both endpoints survived Maven-lock reachability. This cannot reintroduce an
+     * optional or excluded artifact: a lock-pruned target is absent from {@code retainedTargets}.
      */
     private List<DependencyEdge> modelEdges(TargetFragment fragment, Set<String> retainedTargets) {
       List<DependencyEdge> result = new ArrayList<>(resolvedEdges(fragment));
@@ -573,6 +576,7 @@ public final class BazelApplicationModelAssembler {
                   return node != null
                       && node.kind == NodeKind.WORKSPACE
                       && fragment != null
+                      && !fragment.testOnly()
                       && hasMainSources(fragment);
                 })
             .distinct()
@@ -704,7 +708,9 @@ public final class BazelApplicationModelAssembler {
           continue;
         }
         MutableNode node = nodes.get(id);
-        node.runtime = node.paths.stream().anyMatch(inputs.runtimeClasspathPaths()::contains);
+        node.runtime =
+            node.workspaceId != null
+                || node.paths.stream().anyMatch(inputs.runtimeClasspathPaths()::contains);
         node.deployment =
             node.runtime
                 || node.paths.stream().anyMatch(inputs.deploymentClasspathPaths()::contains);

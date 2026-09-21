@@ -97,7 +97,8 @@ public final class BazelModelInputReader {
         "sourceJars",
         "sources",
         "resources",
-        "edges");
+        "edges",
+        "testOnly");
     schema(root, BazelModelInputs.TARGET_SCHEMA);
     var result =
         new TargetFragment(
@@ -115,7 +116,8 @@ public final class BazelModelInputReader {
             mapArray(root, "sourceJars", "$", BazelModelInputReader::fileReference),
             mapArray(root, "sources", "$", BazelModelInputReader::fileReference),
             mapArray(root, "resources", "$", BazelModelInputReader::fileReference),
-            mapArray(root, "edges", "$", BazelModelInputReader::targetEdge));
+            mapArray(root, "edges", "$", BazelModelInputReader::targetEdge),
+            bool(root, "testOnly", "$"));
     validateTargetFragment(result);
     return result;
   }

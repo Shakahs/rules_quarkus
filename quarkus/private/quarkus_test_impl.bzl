@@ -15,7 +15,7 @@ load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusAppInfo", "QuarkusNativeInfo")
-load("//quarkus/private:application_model_aspect.bzl", "has_maven_artifact", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "has_maven_artifact", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "validate_build_property_keys")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_extension_runtime_jars", "collect_local_app_jars", "collect_runtime_classpath", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
@@ -115,10 +115,12 @@ def _test_impl(ctx, integration):
     model = assemble_application_model(ctx, ctx.attr.deps, runtime_classpath, conditional_classpath, deploy_classpath, "test")
 
     # Runtime classpath (for both JUnit -cp and quarkifier --application-classpath)
-    # and the user-built jars Quarkus must scan (comma-separated, for
-    # OUTPUT_SOURCES_DIR).
-    # Extension runtime jars are excluded from direct_jars: leaving them as app
-    # roots exposes their @ConfigRoot classes to both classloaders (SRCFG00027).
+    # and the user-built jars used for test discovery and test-time model path
+    # resolution. The serialized ApplicationModel already supplies Quarkus's
+    # application roots; these jars must not be added to OUTPUT_SOURCES_DIR or
+    # every workspace class is indexed twice.
+    # Extension runtime jars are excluded from direct_jars because they are not
+    # local application outputs.
     cp_file = write_runfiles_paths_file(ctx, "_cp.txt", runtime_classpath, ":")
     declared_build_properties = ctx.attr.build_properties if not integration else {}
     ext_rt_jars = collect_extension_runtime_jars(ctx.attr.deps)
@@ -177,7 +179,7 @@ def _test_impl(ctx, integration):
     runfiles = ctx.runfiles(
         files = direct_runfiles + ctx.files.deployment_artifacts,
         transitive_files = depset(
-            transitive = [runtime_classpath, conditional_classpath, deploy_classpath, java_runtime.files],
+            transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deploy_classpath, java_runtime.files],
         ),
     )
     if coverage_runfiles:

@@ -342,7 +342,7 @@ class BazelApplicationModelAssemblerTest {
             fragments,
             new RuntimeCatalog(List.of(), List.of(), Map.of()),
             emptyConditionalCatalog(),
-            new DeploymentCatalog("coursier", "0.1.0", List.of(), List.of(), List.of(), Map.of()),
+            new DeploymentCatalog("maven", "3", List.of(), List.of(), List.of(), Map.of()),
             new PlatformCatalog(List.of(), List.of(), Map.of()),
             Map.of("com.example:greeting-extension-deployment:1.0.0", LOCAL_DEPLOYMENT),
             Map.of(RAW_LOCAL_RUNTIME, LOCAL_EXTENSION),
@@ -735,7 +735,7 @@ class BazelApplicationModelAssemblerTest {
             "conditional/jars/io/quarkus/example/3.33.2/example.jar", featureA.toString());
     ConditionalCatalog conditional =
         new ConditionalCatalog(
-            "coursier",
+            "maven",
             "0.1.0",
             List.of(
                 "io.quarkus:blocked:3.33.2",
@@ -823,7 +823,7 @@ class BazelApplicationModelAssemblerTest {
         base.runtimeCatalog(),
         conditional,
         new DeploymentCatalog(
-            "coursier",
+            "maven",
             "0.1.0",
             List.of(
                 "io.quarkus:example-deployment:3.33.2",
@@ -896,7 +896,7 @@ class BazelApplicationModelAssemblerTest {
             Map.of());
     DeploymentCatalog deployment =
         new DeploymentCatalog(
-            "coursier",
+            "maven",
             "0.1.0",
             includeDeployment ? List.of("io.quarkus:example-deployment:3.33.2") : List.of(),
             List.of(),
@@ -966,7 +966,7 @@ class BazelApplicationModelAssemblerTest {
   }
 
   private static ConditionalCatalog emptyConditionalCatalog() {
-    return new ConditionalCatalog("coursier", "", List.of(), List.of(), List.of(), Map.of());
+    return new ConditionalCatalog("maven", "3", List.of(), List.of(), List.of(), Map.of());
   }
 
   private static BazelApplicationModelAssembler.Inputs withRuntimeCatalog(

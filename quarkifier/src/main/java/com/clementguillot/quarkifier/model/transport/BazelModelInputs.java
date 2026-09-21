@@ -39,7 +39,8 @@ public final class BazelModelInputs {
       List<FileReference> sourceJars,
       List<FileReference> sources,
       List<FileReference> resources,
-      List<TargetEdge> edges) {
+      List<TargetEdge> edges,
+      boolean testOnly) {
 
     public TargetFragment {
       runtimeOutputJars = List.copyOf(runtimeOutputJars);
@@ -48,6 +49,41 @@ public final class BazelModelInputs {
       sources = List.copyOf(sources);
       resources = List.copyOf(resources);
       edges = List.copyOf(edges);
+    }
+
+    public TargetFragment(
+        String targetId,
+        String bazelLabel,
+        String workspaceName,
+        String packageName,
+        String targetName,
+        String ruleKind,
+        String buildFile,
+        boolean neverlink,
+        ArtifactCoordinates coordinates,
+        List<FileReference> runtimeOutputJars,
+        List<FileReference> outputDirectories,
+        List<FileReference> sourceJars,
+        List<FileReference> sources,
+        List<FileReference> resources,
+        List<TargetEdge> edges) {
+      this(
+          targetId,
+          bazelLabel,
+          workspaceName,
+          packageName,
+          targetName,
+          ruleKind,
+          buildFile,
+          neverlink,
+          coordinates,
+          runtimeOutputJars,
+          outputDirectories,
+          sourceJars,
+          sources,
+          resources,
+          edges,
+          false);
     }
 
     public boolean workspaceTarget() {

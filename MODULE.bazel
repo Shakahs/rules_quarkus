@@ -23,7 +23,11 @@ bazel_dep(name = "rules_go", version = "0.61.0", dev_dependency = True, repo_nam
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk", dev_dependency = True)
 go_sdk.download(version = "1.24.12")
 
-bazel_dep(name = "aspect_rules_lint", version = "2.5.0", dev_dependency = True)
+# quarkifier/BUILD.bazel instantiates the shared macro when the deploy jar is
+# consumed from another module. The macro also declares its PMD target, so the
+# Starlark API it loads must be visible to consumers even though PMD itself is a
+# development-only target.
+bazel_dep(name = "aspect_rules_lint", version = "2.5.0")
 
 # Java formatter tools
 format_tools = use_extension("@aspect_rules_lint//format:extensions.bzl", "tools", dev_dependency = True)
@@ -45,24 +49,10 @@ use_repo(
 # JVM dependencies
 bazel_dep(name = "rules_java", version = "9.6.1")
 
-# Hermetic JDK fallback for running Coursier in the quarkus module extension.
-# Repository rules execute in the fetch phase and cannot use the Java
-# toolchain selected by --java_runtime_version, so the extension references
-# these rules_java-managed repos directly (fetched lazily, and shared with
-# the build when it already uses a remote JDK).
-java_toolchains = use_extension("@rules_java//java:extensions.bzl", "toolchains")
-use_repo(
-    java_toolchains,
-    "remotejdk17_linux",
-    "remotejdk17_linux_aarch64",
-    "remotejdk17_macos",
-    "remotejdk17_macos_aarch64",
-)
-
-bazel_dep(name = "rules_jvm_external", version = "6.10", dev_dependency = True)
+bazel_dep(name = "rules_jvm_external", version = "6.10")
 
 # Quarkus 3.27 LTS dependencies
-maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven", dev_dependency = True)
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     name = "maven_3_27",
     artifacts = [

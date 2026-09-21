@@ -24,7 +24,7 @@ def _write_classpath_file(ctx, name_suffix, jars):
     ctx.actions.write(output = out, content = args)
     return out
 
-def run_augmentation(ctx, output_dir, runtime_classpath, conditional_classpath, deployment_classpath, build_properties, mode = None, package_type = None, local_jars = None, model_file = None):
+def run_augmentation(ctx, output_dir, runtime_classpath, conditional_classpath, deployment_classpath, model_artifacts, build_properties, mode = None, package_type = None, local_jars = None, model_file = None):
     """Runs the quarkifier deploy jar to augment the application.
 
     The deploy jar is a fat jar containing all tool classes + dependencies,
@@ -39,6 +39,7 @@ def run_augmentation(ctx, output_dir, runtime_classpath, conditional_classpath, 
         conditional_classpath: Depset of internally resolved conditional candidates. These are
             action inputs only; activation is controlled exclusively by the explicit model.
         deployment_classpath: Depset of deployment classpath jars.
+        model_artifacts: Depset of every file or tree referenced by model_file.
         build_properties: Declared build-time configuration for this lifecycle.
         mode: Quarkifier mode ("native"), or None for the default Fast_Jar mode.
         package_type: Quarkus JVM package type, or None for fast-jar.
@@ -98,7 +99,7 @@ def run_augmentation(ctx, output_dir, runtime_classpath, conditional_classpath, 
             # lists their exec paths, so they must be declared or the sandbox
             # will not have them when Quarkus opens the deployment closure.
             direct = [tool_jar, app_cp_file, build_properties_file, model_file] + ctx.files.deployment_artifacts + ([local_jars_file] if local_jars_file else []),
-            transitive = [runtime_classpath, conditional_classpath, deployment_classpath, java_runtime.files],
+            transitive = [runtime_classpath, conditional_classpath, deployment_classpath, model_artifacts, java_runtime.files],
         ),
         outputs = [output_dir],
         mnemonic = mnemonic,

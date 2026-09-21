@@ -12,7 +12,7 @@ Quarkus hot-reload.
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
-load("//quarkus/private:application_model_aspect.bzl", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "write_build_properties")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_resource_dir_paths", "collect_runtime_classpath", "collect_source_dir_paths", "is_local_artifact", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
 load("//quarkus/private:coverage_transition.bzl", "dev_lifecycle_transition", "disable_coverage_transition", "single_transitioned_target")
@@ -124,7 +124,7 @@ def _quarkus_dev_impl(ctx):
             files.codegen_input_dirs,
             model,
         ] + ctx.files.deployment_artifacts,
-        transitive_files = depset(transitive = [runtime_classpath, conditional_classpath, deployment_classpath, core_deployment_classpath, java_runtime.files]),
+        transitive_files = depset(transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deployment_classpath, core_deployment_classpath, java_runtime.files]),
     )
 
     return [

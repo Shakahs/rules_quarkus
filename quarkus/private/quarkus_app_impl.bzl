@@ -8,7 +8,7 @@ output, and generating a launcher script for `bazel run`.
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusAppInfo")
-load("//quarkus/private:application_model_aspect.bzl", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
 load("//quarkus/private:augmentation.bzl", "run_augmentation")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_runtime_classpath", "collect_source_jars", "quarkus_extension_deployment_classpath_aspect")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
@@ -74,6 +74,7 @@ def _quarkus_app_impl(ctx):
         runtime_classpath,
         conditional_classpath,
         deployment_classpath,
+        collect_all_model_artifacts(ctx.attr.deps),
         ctx.attr.build_properties,
         package_type = ctx.attr.package_type,
         local_jars = local_jars,

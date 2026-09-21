@@ -1,7 +1,7 @@
-"Unit tests for external model-catalog normalization."
+"Unit tests for Maven-lock model-catalog normalization."
 
 load("@bazel_skylib//lib:unittest.bzl", "asserts", "unittest")
-load("//quarkus:extensions.bzl", "conditional_catalog_for_test", "coursier_artifact_for_test", "coursier_report_coordinate_for_test", "deployment_catalog_for_test", "dev_mode_artifacts_for_test", "jar_target_name_for_test", "java_major_version_for_test", "maven_target_name_for_test", "min_java_version_for_test", "runtime_catalog_for_test", "runtime_discovery_artifacts_for_test", "runtime_resolution_roots_for_test")
+load("//quarkus:extensions.bzl", "jar_target_name_for_test", "maven_target_name_for_test", "runtime_catalog_for_test")
 
 def _runtime_catalog_v3_test_impl(ctx):
     env = unittest.begin(ctx)
@@ -18,15 +18,11 @@ def _runtime_catalog_v3_test_impl(ctx):
             "m.group:multi": {"shasums": {"jar": "m", "runtime": "mr"}, "version": "4.0"},
             "z.group:z-artifact": {"shasums": {"jar": "z"}, "version": "9.8.7"},
         },
-        "conflict_resolution": {
-            "z.group:z-artifact:8.0": "z.group:z-artifact:9.8.7",
-        },
+        "conflict_resolution": {"z.group:z-artifact:8.0": "z.group:z-artifact:9.8.7"},
         "dependencies": {
             "a.group:a-artifact:jar:tests": ["z.group:z-artifact"],
             "c.group:classified:jar:classes": [],
-            "parent.group:parent": [
-                "m.group:multi",
-            ],
+            "parent.group:parent": ["m.group:multi"],
             "z.group:z-artifact": [],
         },
         "packages": {
@@ -35,15 +31,9 @@ def _runtime_catalog_v3_test_impl(ctx):
         },
         "version": "3",
     }
-
     catalog = runtime_catalog_for_test(lock)
-
     asserts.equals(env, "quarkus-bazel-runtime-catalog-v1", catalog["schemaVersion"])
-    asserts.equals(
-        env,
-        ["m.group:multi:jar:runtime", "z.group:z-artifact"],
-        catalog["directArtifacts"],
-    )
+    asserts.equals(env, ["m.group:multi:jar:runtime", "z.group:z-artifact"], catalog["directArtifacts"])
     asserts.equals(env, "a.group:a-artifact:jar:tests", catalog["nodes"][0]["coordinateKey"])
     asserts.equals(env, "a_group_a_artifact_tests", catalog["nodes"][0]["targetName"])
     asserts.equals(env, "tests", catalog["nodes"][0]["coordinates"]["classifier"])
@@ -53,537 +43,39 @@ def _runtime_catalog_v3_test_impl(ctx):
     asserts.equals(env, "classes", catalog["nodes"][1]["coordinates"]["classifier"])
     asserts.equals(env, "m.group:multi", catalog["nodes"][2]["coordinateKey"])
     asserts.equals(env, "m.group:multi:jar:runtime", catalog["nodes"][3]["coordinateKey"])
-    asserts.equals(env, "m_group_multi_runtime", catalog["nodes"][3]["targetName"])
-
-    resolved = runtime_catalog_for_test(lock, {
-        "conflict_resolution": {},
-        "dependencies": [
-            {
-                "coord": "a.group:a-artifact:jar:tests:1.2.3",
-                "directDependencies": [
-                    "c.group:classified:jar:classes:3.0",
-                    "excluded.group:excluded:1.0",
-                ],
-            },
-            {
-                "coord": "c.group:classified:jar:classes:3.0",
-                "directDependencies": [],
-                "exclusions": ["excluded.group:excluded"],
-                "optional": True,
-            },
-            {
-                "coord": "z.group:z-artifact:9.8.7",
-                "directDependencies": [],
-            },
-            {
-                "coord": "excluded.group:excluded:1.0",
-                "directDependencies": [],
-            },
-        ],
-        "version": "0.1.0",
-    })
-    asserts.equals(
-        env,
-        ["c.group:classified:jar:classes"],
-        resolved["nodes"][0]["dependencies"],
-    )
-    asserts.equals(env, ["excluded.group:excluded"], resolved["nodes"][1]["exclusions"])
-    asserts.true(env, resolved["nodes"][1]["optional"])
     return unittest.end(env)
 
 runtime_catalog_v3_test = unittest.make(_runtime_catalog_v3_test_impl)
 
 def _runtime_catalog_ignores_non_artifact_inputs_test_impl(ctx):
     env = unittest.begin(ctx)
-    lock = {
-        "__INPUT_ARTIFACTS_HASH": {
-            "collision.group:same-ga:pom:import": 1,
-            "repositories": 2,
-        },
-        "artifacts": {
-            "collision.group:same-ga": {"shasums": {"jar": "runtime"}, "version": "1.0"},
-        },
+    catalog = runtime_catalog_for_test({
+        "__INPUT_ARTIFACTS_HASH": {"collision.group:same-ga:pom:import": 1, "repositories": 2},
+        "artifacts": {"collision.group:same-ga": {"shasums": {"jar": "runtime"}, "version": "1.0"}},
         "dependencies": {},
-        "packages": {
-            "collision.group:same-ga": ["collision.group:same-ga"],
-        },
+        "packages": {"collision.group:same-ga": ["collision.group:same-ga"]},
         "version": "3",
-    }
-
-    catalog = runtime_catalog_for_test(lock)
-
+    })
     asserts.equals(env, [], catalog["directArtifacts"])
     asserts.equals(env, 1, len(catalog["nodes"]))
-    asserts.equals(env, "collision.group:same-ga", catalog["nodes"][0]["coordinateKey"])
     return unittest.end(env)
 
 runtime_catalog_ignores_non_artifact_inputs_test = unittest.make(_runtime_catalog_ignores_non_artifact_inputs_test_impl)
 
-def _relocated_runtime_root_test_impl(ctx):
-    env = unittest.begin(ctx)
-    lock = {
-        "__INPUT_ARTIFACTS_HASH": {
-            "io.quarkus.platform:quarkus-bom": 1,
-            "io.quarkus:quarkus-junit5": 2,
-            "repositories": 3,
-        },
-        "artifacts": {
-            "io.quarkus:quarkus-junit": {"shasums": {"jar": "junit"}, "version": "3.33.2"},
-            "io.quarkus:quarkus-test-common": {"shasums": {"jar": "test-common"}, "version": "3.33.2"},
-            "io.smallrye:jandex": {"shasums": {"jar": "jandex"}, "version": "3.5.3"},
-        },
-        "conflict_resolution": {
-            "io.quarkus:quarkus-junit5": "io.quarkus:quarkus-junit5:3.33.2",
-        },
-        "dependencies": {
-            "io.quarkus:quarkus-junit": ["io.quarkus:quarkus-test-common"],
-            "io.quarkus:quarkus-test-common": ["io.smallrye:jandex"],
-            "io.smallrye:jandex": [],
-        },
-        "packages": {
-            "io.quarkus:quarkus-junit": ["io.quarkus.test.junit"],
-            "io.quarkus:quarkus-test-common": ["io.quarkus.test.common"],
-            "io.smallrye:jandex": ["org.jboss.jandex"],
-        },
-        "version": "3",
-    }
-
-    catalog = runtime_catalog_for_test(lock)
-
-    # The requested relocation source has no artifact entry, so it cannot be a
-    # catalog identity. It must still be sent to Coursier as a resolution root.
-    asserts.equals(env, [], catalog["directArtifacts"])
-    asserts.equals(
-        env,
-        ["io.quarkus:quarkus-junit5:3.33.2"],
-        runtime_resolution_roots_for_test(lock, catalog),
-    )
-    return unittest.end(env)
-
-relocated_runtime_root_test = unittest.make(_relocated_runtime_root_test_impl)
-
-def _relocated_runtime_dependency_closure_test_impl(ctx):
-    env = unittest.begin(ctx)
-    lock = {
-        "__INPUT_ARTIFACTS_HASH": {
-            "io.quarkus:quarkus-junit5": 1,
-        },
-        "artifacts": {
-            "io.quarkus:quarkus-junit": {"shasums": {"jar": "junit"}, "version": "3.33.2"},
-            "io.quarkus:quarkus-test-common": {"shasums": {"jar": "test-common"}, "version": "3.33.2"},
-            "io.smallrye:jandex": {"shasums": {"jar": "jandex"}, "version": "3.5.3"},
-        },
-        "conflict_resolution": {
-            "io.quarkus:quarkus-junit5": "io.quarkus:quarkus-junit5:3.33.2",
-        },
-        "dependencies": {
-            "io.quarkus:quarkus-junit": ["io.quarkus:quarkus-test-common"],
-            "io.quarkus:quarkus-test-common": ["io.smallrye:jandex"],
-            "io.smallrye:jandex": [],
-        },
-        "packages": {},
-        "version": "3",
-    }
-    resolver_report = {
-        "conflict_resolution": {},
-        "dependencies": [
-            {
-                "coord": "io.quarkus:quarkus-junit:3.33.2",
-                "directDependencies": ["io.quarkus:quarkus-test-common:3.33.2"],
-            },
-            {
-                "coord": "io.quarkus:quarkus-test-common:3.33.2",
-                "directDependencies": ["io.smallrye:jandex:3.5.3"],
-            },
-            {
-                "coord": "io.smallrye:jandex:3.5.3",
-                "directDependencies": [],
-            },
-        ],
-        "version": "0.1.0",
-    }
-
-    nodes = {
-        node["coordinateKey"]: node
-        for node in runtime_catalog_for_test(lock, resolver_report)["nodes"]
-    }
-    asserts.equals(
-        env,
-        ["io.quarkus:quarkus-test-common"],
-        nodes["io.quarkus:quarkus-junit"]["dependencies"],
-    )
-    asserts.equals(
-        env,
-        ["io.smallrye:jandex"],
-        nodes["io.quarkus:quarkus-test-common"]["dependencies"],
-    )
-    return unittest.end(env)
-
-relocated_runtime_dependency_closure_test = unittest.make(_relocated_runtime_dependency_closure_test_impl)
-
-def _runtime_discovery_artifacts_test_impl(ctx):
-    env = unittest.begin(ctx)
-    lock = {
-        "artifacts": {
-            "a.group:a-artifact:jar:tests": {"shasums": {"tests": "a"}, "version": "1.2.3"},
-            "c.group:classified": {"shasums": {"classes": "c"}, "version": "3.0"},
-            "m.group:multi": {"shasums": {"jar": "m", "runtime": "mr", "sources": "ms"}, "version": "4.0"},
-            "z.group:z-artifact": {"shasums": {"jar": "z"}, "version": "9.8.7"},
-        },
-        "dependencies": {
-            "a.group:a-artifact:jar:tests": [],
-            "c.group:classified:jar:classes": [],
-            "parent.group:parent": [
-                "m.group:multi",
-                "m.group:multi:jar:runtime",
-                "m.group:multi:jar:sources",
-            ],
-            "z.group:z-artifact": [],
-        },
-        "version": "3",
-    }
-
-    asserts.equals(
-        env,
-        [
-            "a.group:a-artifact:1.2.3,classifier=tests",
-            "c.group:classified:3.0,classifier=classes",
-            "m.group:multi:4.0",
-            "m.group:multi:4.0,classifier=runtime",
-            "z.group:z-artifact:9.8.7",
-        ],
-        runtime_discovery_artifacts_for_test(lock),
-    )
-    return unittest.end(env)
-
-runtime_discovery_artifacts_test = unittest.make(_runtime_discovery_artifacts_test_impl)
-
-def _coursier_artifact_test_impl(ctx):
-    env = unittest.begin(ctx)
-    gav = coursier_artifact_for_test("io.quarkus:quarkus-rest-deployment:3.33.2")
-    asserts.equals(env, "io.quarkus:quarkus-rest-deployment:3.33.2", gav.fetch)
-    asserts.equals(env, "io.quarkus:quarkus-rest-deployment:3.33.2", gav.report)
-
-    classified = coursier_artifact_for_test("custom.group:build-steps:special:jar:9.1")
-    asserts.equals(env, "custom.group:build-steps:9.1,classifier=special", classified.fetch)
-    asserts.equals(env, "custom.group:build-steps:jar:special:9.1", classified.report)
-
-    canonical_jar = coursier_artifact_for_test("custom.group:build-steps::jar:9.1")
-    asserts.equals(env, "custom.group:build-steps:9.1", canonical_jar.fetch)
-    asserts.equals(env, "custom.group:build-steps:9.1", canonical_jar.report)
-    return unittest.end(env)
-
-coursier_artifact_test = unittest.make(_coursier_artifact_test_impl)
-
-def _dev_mode_artifacts_test_impl(ctx):
-    env = unittest.begin(ctx)
-    asserts.equals(
-        env,
-        [
-            "io.quarkus:quarkus-bootstrap-gradle-resolver:3.33.2",
-            "io.quarkus:quarkus-bootstrap-maven-resolver:3.33.2",
-            "io.quarkus:quarkus-core-deployment:3.33.2",
-        ],
-        dev_mode_artifacts_for_test("3.33.2"),
-    )
-    return unittest.end(env)
-
-dev_mode_artifacts_test = unittest.make(_dev_mode_artifacts_test_impl)
-
 def _maven_target_name_test_impl(ctx):
     env = unittest.begin(ctx)
-    asserts.equals(
-        env,
-        "com_example_my_artifact_tests",
-        maven_target_name_for_test("com.example:my-artifact:jar:tests"),
-    )
+    asserts.equals(env, "com_example_my_artifact_tests", maven_target_name_for_test("com.example:my-artifact:jar:tests"))
     asserts.equals(env, "g_a_special", maven_target_name_for_test("g:a$special"))
-    asserts.equals(
-        env,
-        "org_jacoco_org_jacoco_agent_0_8_14",
-        jar_target_name_for_test(
-            "org/jacoco/org.jacoco.agent/0.8.14/org.jacoco.agent-0.8.14.jar",
-        ),
-    )
-    asserts.equals(
-        env,
-        "org_jacoco_org_jacoco_agent_0_8_14_runtime",
-        jar_target_name_for_test(
-            "org/jacoco/org.jacoco.agent/0.8.14/org.jacoco.agent-0.8.14-runtime.jar",
-        ),
-    )
+    asserts.equals(env, "org_jacoco_org_jacoco_agent_0_8_14", jar_target_name_for_test("org/jacoco/org.jacoco.agent/0.8.14/org.jacoco.agent-0.8.14.jar"))
+    asserts.equals(env, "org_jacoco_org_jacoco_agent_0_8_14_runtime", jar_target_name_for_test("org/jacoco/org.jacoco.agent/0.8.14/org.jacoco.agent-0.8.14-runtime.jar"))
     return unittest.end(env)
 
 maven_target_name_test = unittest.make(_maven_target_name_test_impl)
-
-def _java_major_version_test_impl(ctx):
-    env = unittest.begin(ctx)
-
-    # JDK 8 writes both the banner and the properties to stderr, and reports
-    # the legacy 1.x form.
-    asserts.equals(env, 8, java_major_version_for_test(
-        "VM settings:\n" +
-        "Property settings:\n" +
-        "    java.specification.version = 1.8\n" +
-        "    java.version = 1.8.0_401\n" +
-        "\n" +
-        "java version \"1.8.0_401\"\n" +
-        "Java(TM) SE Runtime Environment (build 1.8.0_401-b10)\n",
-    ))
-
-    asserts.equals(env, 17, java_major_version_for_test(
-        "Property settings:\n" +
-        "    java.specification.version = 17\n" +
-        "\n" +
-        "openjdk version \"17.0.9\" 2023-10-17\n",
-    ))
-    asserts.equals(env, 21, java_major_version_for_test(
-        "    java.specification.version = 21\n",
-    ))
-
-    # A pre-release property value still yields its major version.
-    asserts.equals(env, 25, java_major_version_for_test(
-        "    java.specification.version = 25-ea\n",
-    ))
-
-    # The property wins over the banner even when the banner is seen first,
-    # since java.version can differ from java.specification.version.
-    asserts.equals(env, 11, java_major_version_for_test(
-        "openjdk version \"11.0.21\" 2023-10-17\n" +
-        "    java.specification.version = 11\n",
-    ))
-
-    # JVMs that ignore -XshowSettings leave only the banner to parse.
-    asserts.equals(env, 8, java_major_version_for_test(
-        "openjdk version \"1.8.0_402\"\n",
-    ))
-    asserts.equals(env, 17, java_major_version_for_test(
-        "openjdk version \"17.0.9\" 2023-10-17\n",
-    ))
-
-    # Unparsable output must not be mistaken for a usable JVM.
-    asserts.equals(env, None, java_major_version_for_test(""))
-    asserts.equals(env, None, java_major_version_for_test("Unable to locate a Java Runtime.\n"))
-    asserts.equals(env, None, java_major_version_for_test(
-        "    java.specification.version = unknown\n",
-    ))
-
-    # The minimum must stay aligned with the quarkifier's --java_language_version.
-    asserts.equals(env, 17, min_java_version_for_test)
-    return unittest.end(env)
-
-java_major_version_test = unittest.make(_java_major_version_test_impl)
-
-def _deployment_catalog_test_impl(ctx):
-    env = unittest.begin(ctx)
-    cache_path = "/machine/cache/maven2/g/a/1.0/a-1.0.jar"
-    exe_cache_path = "/machine/cache/maven2/g/tool/1.0/tool-1.0-linux-x86_64.exe"
-    osx_exe_cache_path = "/machine/cache/maven2/g/tool/1.0/tool-1.0-osx-aarch_64.exe"
-    report = {
-        "conflict_resolution": {
-            "g:a:0.9": "g:a:1.0",
-            "g:tool:exe:linux-x86_64:0.9": "g:tool:exe:linux-x86_64:1.0",
-        },
-        "dependencies": [
-            {
-                "coord": "g:a:1.0",
-                # g:runtime:1.0 is already supplied by the locked runtime graph,
-                # so Coursier selects no deployment file for it. The edge is
-                # kept; the model assembler resolves it against the runtime
-                # catalog and fails only when it resolves in neither.
-                "directDependencies": [
-                    "g:tool:exe:linux-x86_64:1.0",
-                    "g:tool:exe:osx-aarch_64:1.0",
-                    "g:runtime:1.0",
-                ],
-                "exclusions": ["x:one"],
-                "file": cache_path,
-            },
-            {
-                "coord": "g:a:1.0",
-                "directDependencies": [],
-                "exclusions": ["x:two"],
-                "file": cache_path,
-            },
-            {
-                "coord": "g:tool:exe:linux-x86_64:1.0",
-                "directDependencies": [],
-                "exclusions": [],
-                "file": exe_cache_path,
-            },
-            {
-                "coord": "g:tool:exe:osx-aarch_64:1.0",
-                "directDependencies": [],
-                "exclusions": [],
-                "file": osx_exe_cache_path,
-            },
-        ],
-        "version": "0.1.0",
-    }
-
-    catalog = deployment_catalog_for_test(
-        report,
-        ["g:a:1.0", "g:tool:exe:linux-x86_64:1.0", "g:tool:exe:osx-aarch_64:1.0"],
-        ["g:missing:jar:tests:1.0"],
-        {
-            cache_path: "deployment/jars/g/a/1.0/a-1.0.jar",
-            exe_cache_path: "deployment/artifacts/g/tool/1.0/tool-1.0-linux-x86_64.exe",
-            osx_exe_cache_path: "deployment/artifacts/g/tool/1.0/tool-1.0-osx-aarch_64.exe",
-        },
-    )
-
-    asserts.equals(env, "quarkus-bazel-deployment-catalog-v1", catalog["schemaVersion"])
-    asserts.equals(env, ["x:one", "x:two"], catalog["nodes"][0]["exclusions"])
-    asserts.equals(env, "deployment/jars/g/a/1.0/a-1.0.jar", catalog["nodes"][0]["repoPath"])
-
-    # Classified artifacts arrive in Coursier's G:A:T:C:V order and must be
-    # remapped to Quarkus' G:A:C:T:V in nodes, edges, roots and droppedRoots.
-    asserts.equals(
-        env,
-        [
-            "g:runtime:1.0",
-            "g:tool:linux-x86_64:exe:1.0",
-            "g:tool:osx-aarch_64:exe:1.0",
-        ],
-        catalog["nodes"][0]["dependencies"],
-    )
-    asserts.equals(env, "g:tool:linux-x86_64:exe:1.0", catalog["nodes"][1]["coordinate"])
-    asserts.equals(
-        env,
-        "deployment/artifacts/g/tool/1.0/tool-1.0-linux-x86_64.exe",
-        catalog["nodes"][1]["repoPath"],
-    )
-    asserts.equals(env, "g:tool:osx-aarch_64:exe:1.0", catalog["nodes"][2]["coordinate"])
-    asserts.equals(
-        env,
-        "deployment/artifacts/g/tool/1.0/tool-1.0-osx-aarch_64.exe",
-        catalog["nodes"][2]["repoPath"],
-    )
-    asserts.equals(
-        env,
-        [
-            "g:a:1.0",
-            "g:tool:linux-x86_64:exe:1.0",
-            "g:tool:osx-aarch_64:exe:1.0",
-        ],
-        catalog["roots"],
-    )
-    asserts.equals(env, ["g:missing:tests:jar:1.0"], catalog["droppedRoots"])
-    asserts.equals(
-        env,
-        {
-            "g:a:0.9": "g:a:1.0",
-            "g:tool:linux-x86_64:exe:0.9": "g:tool:linux-x86_64:exe:1.0",
-        },
-        catalog["conflictResolution"],
-    )
-    return unittest.end(env)
-
-deployment_catalog_test = unittest.make(_deployment_catalog_test_impl)
-
-def _conditional_catalog_test_impl(ctx):
-    env = unittest.begin(ctx)
-    cache_path = "/machine/cache/maven2/g/feature/1.0/feature-1.0-tests.jar"
-    resolution = struct(
-        descriptors = [{
-            "conditionalDependencies": ["g:feature:tests:jar:1.0"],
-            "conditionalDevDependencies": [],
-            "dependencyConditions": ["g:trigger"],
-            "deploymentArtifact": "g:base-deployment:1.0",
-            "runtimeArtifact": "g:base:1.0",
-        }],
-        report = {
-            "conflict_resolution": {},
-            "dependencies": [{
-                "coord": "g:feature:jar:tests:1.0",
-                # Coursier can retain POM edges to artifacts already supplied
-                # by the locked runtime graph without selecting another file.
-                "directDependencies": ["g:runtime:jar::1.0"],
-                "exclusions": [],
-                "file": cache_path,
-            }],
-            "version": "0.1.0",
-        },
-        roots = {"g:feature:jar:tests:1.0": "g:feature:tests:jar:1.0"},
-    )
-
-    catalog = conditional_catalog_for_test(
-        resolution,
-        {cache_path: "conditional/jars/g/feature/1.0/feature-1.0-tests.jar"},
-    )
-
-    asserts.equals(env, "quarkus-bazel-conditional-catalog-v1", catalog["schemaVersion"])
-    asserts.equals(env, "g:feature:tests:jar:1.0", catalog["nodes"][0]["coordinate"])
-    asserts.equals(env, [], catalog["nodes"][0]["dependencies"])
-    asserts.equals(env, ["g:feature:tests:jar:1.0"], catalog["roots"])
-    asserts.equals(env, "g:a:classifier:zip:1", coursier_report_coordinate_for_test("g:a:zip:classifier:1"))
-    return unittest.end(env)
-
-conditional_catalog_test = unittest.make(_conditional_catalog_test_impl)
-
-def _coursier_default_type_spelling_test_impl(ctx):
-    env = unittest.begin(ctx)
-    asserts.equals(env, "g:a:1", coursier_report_coordinate_for_test("g:a:jar:1"))
-    asserts.equals(env, "g:a:1", coursier_report_coordinate_for_test("g:a:jar::1"))
-    asserts.equals(env, "g:a:zip:1", coursier_report_coordinate_for_test("g:a:zip::1"))
-    asserts.equals(env, "g:a:zip:1", coursier_report_coordinate_for_test("g:a:zip:1"))
-
-    # A POM that declares <type>jar</type> explicitly (org.aesh:readline 3.17.2
-    # does for terminal-api) makes Coursier report the same file under both
-    # spellings; the catalog must keep exactly one node for it.
-    cache_path = "/machine/cache/maven2/g/api/1.0/api-1.0.jar"
-    report = {
-        "conflict_resolution": {},
-        "dependencies": [
-            {
-                "coord": "g:api:1.0",
-                "directDependencies": ["g:detect:1.0"],
-                "exclusions": [],
-                "file": cache_path,
-            },
-            {
-                "coord": "g:api:jar:1.0",
-                "directDependencies": ["g:detect:1.0"],
-                "exclusions": [],
-                "file": cache_path,
-            },
-            {
-                "coord": "g:readline:1.0",
-                "directDependencies": ["g:api:jar:1.0"],
-                "exclusions": [],
-                "file": "/machine/cache/maven2/g/readline/1.0/readline-1.0.jar",
-            },
-        ],
-        "version": "0.1.0",
-    }
-    catalog = deployment_catalog_for_test(
-        report,
-        ["g:readline:1.0"],
-        [],
-        {
-            cache_path: "deployment/jars/g/api/1.0/api-1.0.jar",
-            "/machine/cache/maven2/g/readline/1.0/readline-1.0.jar": "deployment/jars/g/readline/1.0/readline-1.0.jar",
-        },
-    )
-    asserts.equals(env, ["g:api:1.0", "g:readline:1.0"], [node["coordinate"] for node in catalog["nodes"]])
-    asserts.equals(env, ["g:api:1.0"], catalog["nodes"][1]["dependencies"])
-    return unittest.end(env)
-
-coursier_default_type_spelling_test = unittest.make(_coursier_default_type_spelling_test_impl)
 
 def model_catalogs_test_suite():
     unittest.suite(
         "model_catalogs_tests",
         runtime_catalog_v3_test,
         runtime_catalog_ignores_non_artifact_inputs_test,
-        relocated_runtime_root_test,
-        relocated_runtime_dependency_closure_test,
-        runtime_discovery_artifacts_test,
-        coursier_artifact_test,
-        dev_mode_artifacts_test,
         maven_target_name_test,
-        java_major_version_test,
-        deployment_catalog_test,
-        conditional_catalog_test,
-        coursier_default_type_spelling_test,
     )

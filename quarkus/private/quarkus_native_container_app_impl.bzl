@@ -11,7 +11,7 @@ quarkus_app macro when native_container_build=True, creating a <name>_native tar
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusNativeInfo")
-load("//quarkus/private:application_model_aspect.bzl", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
 load("//quarkus/private:augmentation.bzl", "run_augmentation")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_runtime_classpath", "quarkus_extension_deployment_classpath_aspect")
 load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
@@ -141,6 +141,7 @@ def _quarkus_native_container_app_impl(ctx):
         runtime_classpath,
         conditional_classpath,
         deployment_classpath,
+        collect_all_model_artifacts(ctx.attr.deps),
         ctx.attr.build_properties,
         mode = "native",
         local_jars = collect_local_app_jars(ctx.attr.deps, runtime_classpath),

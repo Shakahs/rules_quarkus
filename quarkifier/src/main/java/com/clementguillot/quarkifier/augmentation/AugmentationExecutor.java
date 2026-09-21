@@ -17,7 +17,6 @@ import io.quarkus.bootstrap.app.AugmentResult;
 import io.quarkus.bootstrap.app.CuratedApplication;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.ApplicationModel;
-import io.quarkus.paths.PathList;
 import java.lang.reflect.Constructor;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,7 +42,7 @@ public final class AugmentationExecutor {
    */
   public static void execute(QuarkifierConfig config) throws AugmentationException {
     try {
-      Path outputDir = config.outputDir();
+      Path outputDir = config.outputDir().toAbsolutePath().normalize();
       Files.createDirectories(outputDir);
 
       if (config.applicationClasspath().isEmpty()) {
@@ -63,16 +62,26 @@ public final class AugmentationExecutor {
           // No augmentation is run — the test JVM handles that via QuarkusBootstrap.Mode.TEST.
         case TEST -> serializeTestModel(outputDir, appModel);
         case NATIVE -> {
-          runAugmentation(config, partition.localAppJars(), appModel, outputDir);
-          NativeSourcesAssembler.assemble(outputDir, effectiveRuntimeJars);
+          Path stagingDir = createAugmentationStagingDirectory();
+          Path stagingTarget = stagingDir.resolve("target");
+          runAugmentation(config, appModel, stagingTarget);
+          Path nativeSources = NativeSourcesAssembler.assemble(stagingTarget, effectiveRuntimeJars);
+          copyTree(nativeSources, outputDir.resolve("native-sources"));
         }
         case NORMAL -> {
-          runAugmentation(config, partition.localAppJars(), appModel, outputDir);
+          Path stagingDir = createAugmentationStagingDirectory();
+          Path stagingTarget = stagingDir.resolve("target");
+          runAugmentation(config, appModel, stagingTarget);
           if (config.packageType() == JarPackageType.FAST_JAR) {
             FastJarAssembler.assemble(
-                outputDir, effectiveRuntimeJars, appModel, config.resources(), config.mainClass());
+                stagingTarget,
+                effectiveRuntimeJars,
+                appModel,
+                config.resources(),
+                config.mainClass());
           }
-          config.packageType().validateOutput(outputDir);
+          config.packageType().validateOutput(stagingTarget);
+          publishJvmPackage(stagingTarget, outputDir, config.packageType());
         }
         default -> throw new AugmentationException("Unhandled mode: " + config.mode());
       }
@@ -81,6 +90,58 @@ public final class AugmentationExecutor {
     } catch (Exception e) {
       throw new AugmentationException("Quarkus augmentation failed: " + e.getMessage(), e);
     }
+  }
+
+  private static Path createAugmentationStagingDirectory() throws java.io.IOException {
+    Path stagingDir = Files.createTempDirectory("quarkifier-project-");
+    Files.createDirectories(stagingDir.resolve("src/main"));
+    Files.createDirectories(stagingDir.resolve("target"));
+    return stagingDir;
+  }
+
+  private static void publishJvmPackage(
+      Path stagingTarget, Path outputDir, JarPackageType packageType) throws java.io.IOException {
+    switch (packageType) {
+      case FAST_JAR, MUTABLE_JAR, AOT_JAR ->
+          copyTree(stagingTarget.resolve("quarkus-app"), outputDir.resolve("quarkus-app"));
+      case UBER_JAR ->
+          copyFile(stagingTarget.resolve("quarkus-run.jar"), outputDir.resolve("quarkus-run.jar"));
+      case LEGACY_JAR -> {
+        copyFile(stagingTarget.resolve("quarkus-run.jar"), outputDir.resolve("quarkus-run.jar"));
+        Path legacyLib = stagingTarget.resolve("lib");
+        if (Files.isDirectory(legacyLib)) {
+          copyTree(legacyLib, outputDir.resolve("lib"));
+        }
+      }
+    }
+    Path artifactProperties = stagingTarget.resolve("quarkus-artifact.properties");
+    if (Files.isRegularFile(artifactProperties)) {
+      copyFile(artifactProperties, outputDir.resolve(artifactProperties.getFileName()));
+    }
+  }
+
+  private static void copyTree(Path source, Path target) throws java.io.IOException {
+    if (!Files.isDirectory(source)) {
+      throw new java.io.IOException("Expected package directory does not exist: " + source);
+    }
+    try (var paths = Files.walk(source)) {
+      for (Path path : paths.sorted().toList()) {
+        Path destination = target.resolve(source.relativize(path).toString());
+        if (Files.isDirectory(path)) {
+          Files.createDirectories(destination);
+        } else {
+          copyFile(path, destination);
+        }
+      }
+    }
+  }
+
+  private static void copyFile(Path source, Path target) throws java.io.IOException {
+    Path parent = target.getParent();
+    if (parent != null) {
+      Files.createDirectories(parent);
+    }
+    Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
   }
 
   private static ApplicationModel buildModel(QuarkifierConfig config) throws Exception {
@@ -130,7 +191,7 @@ public final class AugmentationExecutor {
 
   /** Runs the Quarkus bootstrap and augmentation for production/native modes. */
   private static void runAugmentation(
-      QuarkifierConfig config, List<Path> localAppJars, ApplicationModel appModel, Path outputDir)
+      QuarkifierConfig config, ApplicationModel appModel, Path outputDir)
       throws Exception {
 
     Properties buildProps =
@@ -149,7 +210,7 @@ public final class AugmentationExecutor {
           QuarkusBootstrap bootstrap =
               QuarkusBootstrap.builder()
                   .setExistingModel(appModel)
-                  .setApplicationRoot(PathList.from(localAppJars))
+                  .setApplicationRoot(appModel.getAppArtifact().getResolvedPaths())
                   .setTargetDirectory(outputDir)
                   .setBaseName(
                       config.mode() == AugmentationMode.NATIVE && config.appName() != null

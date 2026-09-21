@@ -78,7 +78,7 @@ class BazelModelInputReaderTest {
   void readsDeploymentCatalog() {
     var catalog = BazelModelInputReader.readDeploymentCatalog(deploymentCatalog());
 
-    assertEquals("coursier", catalog.resolver());
+    assertEquals("maven", catalog.resolver());
     assertEquals("g:a:1.0", catalog.roots().get(0));
     assertEquals("g:b:2.0", catalog.nodes().get(0).dependencies().get(0));
     assertEquals("deployment/jars/g/a/1.0/a-1.0.jar", catalog.nodes().get(0).repoPath());
@@ -247,7 +247,7 @@ class BazelModelInputReaderTest {
     return """
         {
           "schemaVersion":"quarkus-bazel-deployment-catalog-v1",
-          "resolver":"coursier",
+          "resolver":"maven",
           "resolverReportVersion":"0.1.0",
           "roots":["g:a:1.0"],
           "droppedRoots":["g:missing:1.0"],
@@ -274,7 +274,7 @@ class BazelModelInputReaderTest {
     return """
         {
           "schemaVersion":"quarkus-bazel-conditional-catalog-v1",
-          "resolver":"coursier",
+          "resolver":"maven",
           "resolverReportVersion":"0.1.0",
           "roots":["g:feature:1.0","g:dev:1.0"],
           "nodes":[

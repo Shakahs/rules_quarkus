@@ -1,4 +1,12 @@
+load("@rules_java//java:java_binary.bzl", "java_binary")
 load("//quarkifier:quarkifier.bzl", "quarkifier_targets")
+
+java_binary(
+    name = "workspace_classes_merger",
+    srcs = ["workspace_classes_merger/WorkspaceClassesMerger.java"],
+    main_class = "com.clementguillot.quarkifier.workspace.WorkspaceClassesMerger",
+    visibility = ["//quarkus/private:__pkg__"],
+)
 
 # Per-minor quarkifier targets.
 # Each call creates: quarkifier_lib_X_Y, quarkifier_X_Y, quarkifier_test_X_Y, pmd_test_X_Y

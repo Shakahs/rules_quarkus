@@ -43,7 +43,7 @@ public final class MavenCoordinateParser {
    * @return parsed coordinates, or a fallback based on the filename
    */
   public static Coordinates parse(Path jarPath) {
-    // Try to resolve symlinks to get the original path (e.g., Coursier cache)
+    // Try to resolve symlinks to get the original path (for example a Maven cache)
     // which has the full Maven directory structure for groupId extraction.
     Path resolvedPath = jarPath;
     try {

@@ -78,9 +78,8 @@ _prefix_entries ":" "${WORKSPACE_DIR}/%{classpath_file}" "$APP_CP_FILE"
 MODEL_APP_CP_FILE=$(mktemp)
 _realpath_entries "$APP_CP_FILE" "$MODEL_APP_CP_FILE" || exit 1
 
-# Direct dep jars: comma-separated in source, prefix each entry.
-# Produces two files: comma-separated (for OUTPUT_SOURCES_DIR / test discovery)
-# and colon-separated (for --local-app-jars-file).
+# Direct dep jars: comma-separated in source, prefix each entry. The file is
+# used for test discovery and to resolve local model artifacts at test time.
 DIRECT_JARS_FILE=$(mktemp)
 _prefix_entries "," "${WORKSPACE_DIR}/%{direct_jars_file}" "$DIRECT_JARS_FILE"
 
@@ -139,10 +138,18 @@ if [ ! -f "$MODEL_DIR/test-app-model.dat" ]; then
   echo "ERROR: test-app-model.dat was not generated" >&2
   exit 1
 fi
+# AppMakerHelper derives both project discovery and its writable build target
+# from the JVM working directory. Bazel source/runfile trees are read-only, so
+# provide an action-local Maven-layout root. The serialized model continues to
+# point at the real workspace sources and canonical class directories.
+TEST_PROJECT_DIR="$MODEL_DIR/project"
+mkdir -p "$TEST_PROJECT_DIR/src/main" "$TEST_PROJECT_DIR/target"
 
-# Phase 2: Run JUnit with the serialized model.
-# OUTPUT_SOURCES_DIR tells AppMakerHelper to add the user's jars to the
-# application root so Quarkus scans them for @Path endpoints and CDI beans.
+# Phase 2: Run JUnit with the serialized model. AppMakerHelper obtains the
+# application roots from that model and locates the selected test class from
+# the JUnit classpath. Adding the local jars again through OUTPUT_SOURCES_DIR
+# would create duplicate application archives and duplicate Jandex ClassInfo
+# instances for every application class.
 # Auto-discover test classes from user jars if no explicit selectors were given.
 # Unit tests follow JUnit's default naming pattern while integration tests
 # follow the Maven Failsafe-compatible *IT convention.
@@ -259,7 +266,7 @@ elif [ "$QUARKUS_JACOCO_PRESENT" = "true" ]; then
   )
 fi
 
-# Use a JDK @argfile to avoid E2BIG on the -cp and -DOUTPUT_SOURCES_DIR args.
+# Use a JDK @argfile to avoid E2BIG on the classpath.
 # Values are double-quoted per JDK argfile syntax to handle paths with spaces;
 # backslash and double-quote are escaped inside the quotes.
 _argfile_escape() { tr -d '\n' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -273,13 +280,9 @@ JAVA_ARGS_FILE=$(mktemp)
   fi
   _argfile_escape < "$APP_CP_FILE"
   printf '"\n'
-  printf '"'
-  printf '%s' "-DOUTPUT_SOURCES_DIR="
-  _argfile_escape < "$DIRECT_JARS_FILE"
-  printf '"\n'
 } > "$JAVA_ARGS_FILE"
 
-"$JAVA" "@$JAVA_ARGS_FILE" \
+(cd "$TEST_PROJECT_DIR" && "$JAVA" "@$JAVA_ARGS_FILE" \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.invoke=ALL-UNNAMED \
   %{build_property_jvm_flags} \
@@ -290,7 +293,7 @@ JAVA_ARGS_FILE=$(mktemp)
   %{jvm_flags} \
   org.junit.platform.console.ConsoleLauncher \
   $TEST_ARGS \
-  --reports-dir="$REPORTS_DIR"
+  --reports-dir="$REPORTS_DIR")
 FINAL_EXIT=$?
 
 rm -f "$JAVA_ARGS_FILE" "$APP_CP_FILE"
