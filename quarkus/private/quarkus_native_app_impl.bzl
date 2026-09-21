@@ -20,11 +20,17 @@ load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
 _GVM_TOOLCHAIN_TYPE = "@rules_graalvm//graalvm/toolchain"
 
 # We cd into native-sources/ so that relative paths in the args file resolve
-# correctly. The args file ends with "<output-name> -jar <runner>.jar": the
-# output-name token is removed and replaced by -o with the absolute output
+# correctly. The args file ends with "<output-name> -jar <runner>.jar" up to
+# Quarkus 3.33 and with "-o <output-name> -jar <runner>.jar" in 3.39: either
+# output-name form is removed and replaced by -o with the absolute output
 # path. Monitoring options that may be incompatible with the installed
 # GraalVM version are stripped. The rewritten args are passed via @argfile
 # so the -cp line (one entry per dependency jar) never lands on argv (E2BIG).
+#
+# native-image only accepts the C compiler path. The compiler driver resolves
+# its linker by name from PATH (gcc's collect2 does on Fedora and Arch), so the
+# selected CC toolchain's linker directory is put first on PATH; otherwise the
+# action would depend on where the host happens to install ld.
 _NATIVE_IMAGE_SCRIPT = """
 set -euo pipefail
 EXECROOT="$(pwd)"
@@ -35,9 +41,17 @@ case "$CC_PATH" in
   /*) ;;
   *) CC_PATH="$EXECROOT/$CC_PATH" ;;
 esac
+LD_PATH="{ld_path}"
+if [ -n "$LD_PATH" ]; then
+  case "$LD_PATH" in
+    /*) ;;
+    *) LD_PATH="$EXECROOT/$LD_PATH" ;;
+  esac
+  export PATH="${{LD_PATH%/*}}:${{PATH:-/usr/bin:/bin}}"
+fi
 cd "{native_sources}"
 REWRITTEN_ARGS=$(mktemp)
-sed -e 's| {runner_name} -jar | -jar |' -e 's|--enable-monitoring=[^ ]*||g' native-image.args > "$REWRITTEN_ARGS"
+sed -e 's| -o {runner_name} -jar | -jar |' -e 's| {runner_name} -jar | -jar |' -e 's|--enable-monitoring=[^ ]*||g' native-image.args > "$REWRITTEN_ARGS"
 exec "$NATIVE_IMAGE" "@$REWRITTEN_ARGS" -H:CCompilerPath="$CC_PATH" -o "$OUTPUT"
 """
 
@@ -59,6 +73,14 @@ def _run_native_image(ctx, output_dir, binary):
         action_name = "c-compile",
     )
 
+    # native-image compiles and links with the same driver, so it needs the
+    # toolchain's link environment (e.g. PATH or SDK variables it declares).
+    link_env = cc_common.get_environment_variables(
+        feature_configuration = feature_configuration,
+        action_name = "c++-link-executable",
+        variables = cc_common.empty_variables(),
+    )
+
     ctx.actions.run_shell(
         command = _NATIVE_IMAGE_SCRIPT.format(
             native_image = native_image_bin.executable.path,
@@ -66,7 +88,9 @@ def _run_native_image(ctx, output_dir, binary):
             output = binary.path,
             runner_name = ctx.label.name + "-runner",
             cc_path = c_compiler_path,
+            ld_path = cc_toolchain.ld_executable,
         ),
+        env = link_env,
         inputs = depset(
             direct = [output_dir, native_image_bin.executable],
             transitive = [

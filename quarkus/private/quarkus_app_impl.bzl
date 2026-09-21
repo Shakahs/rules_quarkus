@@ -29,7 +29,7 @@ def _runner_path(package_type):
 
 def _package_type_version_error(package_type, quarkus_version):
     if package_type == "aot-jar" and quarkus_version.startswith("3.27."):
-        return "package_type 'aot-jar' requires Quarkus 3.33; configured version is {}".format(quarkus_version)
+        return "package_type 'aot-jar' requires Quarkus 3.33 or newer; configured version is {}".format(quarkus_version)
     return ""
 
 def _shell_quote(s):

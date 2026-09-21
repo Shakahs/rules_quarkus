@@ -19,7 +19,7 @@ def _package_type_versions_test_impl(ctx):
     asserts.equals(env, "", package_type_version_error_for_test("aot-jar", "3.33.2"))
     asserts.equals(
         env,
-        "package_type 'aot-jar' requires Quarkus 3.33; configured version is 3.27.4",
+        "package_type 'aot-jar' requires Quarkus 3.33 or newer; configured version is 3.27.4",
         package_type_version_error_for_test("aot-jar", "3.27.4"),
     )
     return unittest.end(env)

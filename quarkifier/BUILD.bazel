@@ -11,3 +11,8 @@ quarkifier_targets(
     maven_repo = "@maven_3_33",
     minor = "3_33",
 )
+
+quarkifier_targets(
+    maven_repo = "@maven_3_39",
+    minor = "3_39",
+)

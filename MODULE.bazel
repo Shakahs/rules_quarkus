@@ -109,3 +109,27 @@ maven.install(
     lock_file = "//:maven_install_3_33.json",
 )
 use_repo(maven, "maven_3_33")
+
+# Quarkus 3.39 dependencies
+maven.install(
+    name = "maven_3_39",
+    artifacts = [
+        # Quarkifier deps (Quarkus 3.39)
+        "io.quarkus:quarkus-core:3.39.4",
+        "io.quarkus:quarkus-core-deployment:3.39.4",
+        "io.quarkus.arc:arc:3.39.4",
+        # CLI framework
+        "info.picocli:picocli:4.7.7",
+        # Test framework
+        "org.junit.platform:junit-platform-launcher:6.0.3",
+        "org.junit.platform:junit-platform-console-standalone:6.0.3",
+        "org.junit.jupiter:junit-jupiter:6.0.3",
+    ],
+    fetch_sources = True,
+    known_contributing_modules = [
+        "bazel_worker_java",
+        "protobuf",
+    ],
+    lock_file = "//:maven_install_3_39.json",
+)
+use_repo(maven, "maven_3_39")

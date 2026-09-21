@@ -140,6 +140,7 @@ The CC toolchain is resolved hermetically — no `use_default_shell_env` or syst
 |-----------------|-----------------|-------|
 | 3.27.4 LTS | GraalVM 21+ | Works with `rules_graalvm` 0.11.1 stock |
 | 3.33.2 LTS | GraalVM 25+ | Requires a fork of `rules_graalvm` with GraalVM 25 support |
+| 3.39.4 | GraalVM 25 | Same `rules_graalvm` fork as 3.33; verified with GraalVM CE 25.0.1 |
 
 ### Using a fork for GraalVM 25
 

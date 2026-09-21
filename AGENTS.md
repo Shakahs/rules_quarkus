@@ -9,7 +9,7 @@ safe changes. It applies to the entire repository.
 applications. The Starlark rules invoke the Quarkus build API through the Java
 `Quarkifier`; they do not wrap Maven or Gradle.
 
-- Supported Quarkus versions are exactly `3.27.4` and `3.33.2`.
+- Supported Quarkus versions are exactly `3.27.4`, `3.33.2`, and `3.39.4`.
 - A Bazel workspace selects one Quarkus version; mixed versions in one
   workspace are not supported.
 - Supported Bazel versions are 7, 8, and 9, with Bzlmod only.
@@ -96,7 +96,7 @@ parent-first runtime artifacts.
 - Preserve Maven directory layout under generated deployment artifacts; Dev UI
   extracts resource versions from those paths.
 - Preserve the version-specific application-model serialization strategies:
-  Java serialization for 3.27 and JSON for 3.33.
+  Java serialization for 3.27 and JSON for 3.33 and 3.39.
 - Dev dependencies use a lifecycle transition. Hot reload must rebuild the dev
   target in the same Bazel configuration; configuration-affecting launch flags
   belong in `dev_build_args` too.
@@ -113,8 +113,8 @@ Kotlin and Scala generation should fail clearly rather than being ignored.
 
 Fast JAR post-processing must keep boot/main classification, stable Maven-style
 jar names, regenerated application metadata, and runner manifest classpaths in
-sync. All JVM layouts use a stable `quarkus-run.jar` path; `aot-jar` is 3.33
-only.
+sync. All JVM layouts use a stable `quarkus-run.jar` path; `aot-jar` requires
+3.33 or newer.
 
 Host native builds and container native builds are mutually exclusive.
 Container builder images should be pinned by digest because mutable tags are
@@ -129,8 +129,10 @@ work. From the repository root:
 ```bash
 bazel build //quarkifier:quarkifier_3_27_deploy.jar
 bazel build //quarkifier:quarkifier_3_33_deploy.jar
+bazel build //quarkifier:quarkifier_3_39_deploy.jar
 bazel test //quarkifier:quarkifier_test_3_27
 bazel test //quarkifier:quarkifier_test_3_33
+bazel test //quarkifier:quarkifier_test_3_39
 bazel build //...
 ```
 
@@ -144,9 +146,10 @@ bazel test //...
 Example workspaces also use `local_path_override` and are useful for manual
 lifecycle checks. Build the matching deploy jar in the root workspace first,
 then run targets such as `//:helloworld`, `//:helloworld_dev`, and the relevant
-tests from `examples/helloworld_3_27` or `examples/helloworld_3_33`.
+tests from `examples/helloworld_3_27`, `examples/helloworld_3_33`, or
+`examples/helloworld_3_39`.
 
-Changes to version-specific Quarkus APIs must cover both adapters unless the
+Changes to version-specific Quarkus APIs must cover every adapter unless the
 behavior is intentionally version-gated. Changes to repository setup or public
 rules should be checked from an external example or smoke workspace, not only
 with unit tests in the root workspace. Dev-mode changes should be exercised by

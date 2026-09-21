@@ -521,6 +521,56 @@ def _conditional_catalog_test_impl(ctx):
 
 conditional_catalog_test = unittest.make(_conditional_catalog_test_impl)
 
+def _coursier_default_type_spelling_test_impl(ctx):
+    env = unittest.begin(ctx)
+    asserts.equals(env, "g:a:1", coursier_report_coordinate_for_test("g:a:jar:1"))
+    asserts.equals(env, "g:a:1", coursier_report_coordinate_for_test("g:a:jar::1"))
+    asserts.equals(env, "g:a:zip:1", coursier_report_coordinate_for_test("g:a:zip::1"))
+    asserts.equals(env, "g:a:zip:1", coursier_report_coordinate_for_test("g:a:zip:1"))
+
+    # A POM that declares <type>jar</type> explicitly (org.aesh:readline 3.17.2
+    # does for terminal-api) makes Coursier report the same file under both
+    # spellings; the catalog must keep exactly one node for it.
+    cache_path = "/machine/cache/maven2/g/api/1.0/api-1.0.jar"
+    report = {
+        "conflict_resolution": {},
+        "dependencies": [
+            {
+                "coord": "g:api:1.0",
+                "directDependencies": ["g:detect:1.0"],
+                "exclusions": [],
+                "file": cache_path,
+            },
+            {
+                "coord": "g:api:jar:1.0",
+                "directDependencies": ["g:detect:1.0"],
+                "exclusions": [],
+                "file": cache_path,
+            },
+            {
+                "coord": "g:readline:1.0",
+                "directDependencies": ["g:api:jar:1.0"],
+                "exclusions": [],
+                "file": "/machine/cache/maven2/g/readline/1.0/readline-1.0.jar",
+            },
+        ],
+        "version": "0.1.0",
+    }
+    catalog = deployment_catalog_for_test(
+        report,
+        ["g:readline:1.0"],
+        [],
+        {
+            cache_path: "deployment/jars/g/api/1.0/api-1.0.jar",
+            "/machine/cache/maven2/g/readline/1.0/readline-1.0.jar": "deployment/jars/g/readline/1.0/readline-1.0.jar",
+        },
+    )
+    asserts.equals(env, ["g:api:1.0", "g:readline:1.0"], [node["coordinate"] for node in catalog["nodes"]])
+    asserts.equals(env, ["g:api:1.0"], catalog["nodes"][1]["dependencies"])
+    return unittest.end(env)
+
+coursier_default_type_spelling_test = unittest.make(_coursier_default_type_spelling_test_impl)
+
 def model_catalogs_test_suite():
     unittest.suite(
         "model_catalogs_tests",
@@ -535,4 +585,5 @@ def model_catalogs_test_suite():
         java_major_version_test,
         deployment_catalog_test,
         conditional_catalog_test,
+        coursier_default_type_spelling_test,
     )

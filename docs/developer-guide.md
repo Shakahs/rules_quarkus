@@ -32,13 +32,15 @@ rules_quarkus/
 │       │   └── ...
 │       ├── main/java_3_27/   # Version-specific: AppModelSerializerImpl (JOS format)
 │       ├── main/java_3_33/   # Version-specific: AppModelSerializerImpl (JSON format)
+│       ├── main/java_3_39/   # Version-specific: AppModelSerializerImpl (JSON format)
 │       └── test/java/com/clementguillot/quarkifier/
 │           ├── QuarkifierConfigPropertyTest.java   # Property-based test
 │           ├── TestDataGenerator.java              # Random data for PBTs
 │           └── ...
 ├── examples/                 # Example workspaces
 │   ├── helloworld_3_27/      # Quarkus 3.27 example
-│   └── helloworld_3_33/      # Quarkus 3.33 example
+│   ├── helloworld_3_33/      # Quarkus 3.33 example
+│   └── helloworld_3_39/      # Quarkus 3.39 example
 ├── e2e/smoke/                # E2E smoke tests (bzlmod, Bazel 7/8/9)
 └── dev/                      # Gazelle and dev tooling
 ```
@@ -50,6 +52,7 @@ rules_quarkus/
 ```bash
 bazel build //quarkifier:quarkifier_3_27_deploy.jar
 bazel build //quarkifier:quarkifier_3_33_deploy.jar
+bazel build //quarkifier:quarkifier_3_39_deploy.jar
 ```
 
 ### Build everything
@@ -65,6 +68,7 @@ bazel build //...
 ```bash
 bazel test //quarkifier:quarkifier_test_3_27
 bazel test //quarkifier:quarkifier_test_3_33
+bazel test //quarkifier:quarkifier_test_3_39
 ```
 
 ### Smoke test (e2e)
@@ -97,6 +101,12 @@ bazel build //quarkifier:quarkifier_3_33_deploy.jar
 cd examples/helloworld_3_33
 bazel run //:helloworld    # Production mode
 bazel run //:helloworld_dev   # Dev mode
+
+# Or for 3.39:
+bazel build //quarkifier:quarkifier_3_39_deploy.jar
+cd examples/helloworld_3_39
+bazel run //:helloworld    # Production mode
+bazel run //:helloworld_dev   # Dev mode
 ```
 
 Each example's `MODULE.bazel` uses `local_path_override` to point at the root directory:
@@ -110,7 +120,7 @@ And `quarkifier_source_dir` to resolve the local deploy jar:
 
 ```starlark
 quarkus.toolchain(
-    quarkus_version = "3.27.4",  # or "3.33.2"
+    quarkus_version = "3.27.4",  # or "3.33.2", "3.39.4"
     lock_file = "//:maven_install.json",
     quarkifier_source_dir = "@com_clementguillot_rules_quarkus//:MODULE.bazel",
 )
@@ -118,7 +128,7 @@ quarkus.toolchain(
 
 ## Classloader Isolation in Dev Mode
 
-Dev mode uses the same version-specific deploy jar as production mode, for example `quarkifier_3_27_deploy.jar` or `quarkifier_3_33_deploy.jar`. Classloader isolation is handled at runtime by `DevModeLauncher.createDevJar()`, which filters the manifest classpath to exclude runtime extension JARs (ArC, REST, etc.) and SmallRye Config JARs. Since dev mode spawns a separate child JVM process, the parent process having these JARs on its classpath is irrelevant. See [dev-mode.md](dev-mode.md) for the full explanation.
+Dev mode uses the same version-specific deploy jar as production mode, for example `quarkifier_3_27_deploy.jar`, `quarkifier_3_33_deploy.jar`, or `quarkifier_3_39_deploy.jar`. Classloader isolation is handled at runtime by `DevModeLauncher.createDevJar()`, which filters the manifest classpath to exclude runtime extension JARs (ArC, REST, etc.) and SmallRye Config JARs. Since dev mode spawns a separate child JVM process, the parent process having these JARs on its classpath is irrelevant. See [dev-mode.md](dev-mode.md) for the full explanation.
 
 ## Existing Tests
 
@@ -141,6 +151,7 @@ Defined in `quarkus/private/versions.bzl`:
 SUPPORTED_VERSIONS = {
     "3.27": "3.27.4",
     "3.33": "3.33.2",
+    "3.39": "3.39.4",
 }
 _RULES_VERSION = "$Format:%(describe:tags=true)$"
 RULES_VERSION = "0.0.0" if _RULES_VERSION.startswith("$Format") else _RULES_VERSION.replace("v", "", 1)

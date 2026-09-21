@@ -732,10 +732,19 @@ def _artifact_paths_from_report(report):
     return paths
 
 def _coursier_report_coordinate(coordinate):
-    """Converts Coursier report order (G:A:T:C:V) to Quarkus G:A:C:T:V."""
+    """Converts Coursier report order (G:A:T:C:V) to Quarkus G:A:C:T:V.
+
+    Coursier echoes a POM's explicit default type (`G:A:jar:V`) and empty
+    classifier (`G:A:T::V`). Both collapse to the canonical form so one artifact
+    keeps a single catalog identity.
+    """
     parts = coordinate.split(":")
+    if len(parts) == 5 and not parts[3]:
+        parts = parts[:3] + parts[4:]
+    if len(parts) == 4 and parts[2] == "jar":
+        parts = parts[:2] + parts[3:]
     if len(parts) <= 4:
-        return coordinate
+        return ":".join(parts)
     if len(parts) == 5:
         return "{}:{}:{}:{}:{}".format(parts[0], parts[1], parts[3], parts[2], parts[4])
     fail("Invalid Coursier report coordinate '{}'".format(coordinate))
@@ -1559,7 +1568,7 @@ def quarkus_app(name, dev = True, dev_build_args = [], native = False, native_co
         native_container_runtime: Container runtime: 'auto' (default), 'docker', or 'podman'.
         native_builder_image: Builder image for container native compilation.
         package_type: JVM output: fast-jar, uber-jar, mutable-jar, legacy-jar, or aot-jar.
-            aot-jar requires Quarkus 3.33.
+            aot-jar requires Quarkus 3.33 or newer.
         build_properties: Declared build-time properties shared by the JVM, dev, and native targets.
         **kwargs: Passed to the underlying quarkus_app_rule (deps, version, jvm_flags, etc.).
     \"\"\"

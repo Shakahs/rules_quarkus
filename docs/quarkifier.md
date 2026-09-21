@@ -3,7 +3,7 @@
 The Quarkifier (`com.clementguillot.quarkifier`) is a standalone Java tool that invokes the Quarkus internal build API (`io.quarkus.deployment`) to perform build-time augmentation. It is the core engine behind `rules_quarkus`.
 
 - **Main class**: `com.clementguillot.quarkifier.QuarkifierLauncher`
-- **Built against**: Quarkus 3.27.4 LTS and 3.33.2
+- **Built against**: Quarkus 3.27.4 LTS, 3.33.2 LTS, and 3.39.4
 
 ## CLI Interface
 
@@ -57,7 +57,7 @@ java -jar quarkifier_<minor>_deploy.jar \
 | `--output-dir` | Yes | — | Directory where the selected package is written |
 | `--resources` | No | `[]` | Comma-separated list of resource file paths |
 | `--mode` | No | `normal` | Augmentation mode: `normal`, `test`, `dev`, or `native` |
-| `--package-type` | No | `fast-jar` | JVM package layout; `uber-jar`, `mutable-jar`, `legacy-jar`, and `aot-jar` require `--mode normal`; `aot-jar` also requires Quarkus 3.33 |
+| `--package-type` | No | `fast-jar` | JVM package layout; `uber-jar`, `mutable-jar`, `legacy-jar`, and `aot-jar` require `--mode normal`; `aot-jar` also requires Quarkus 3.33 or newer |
 | `--app-name` | No | `null` | Application name for Quarkus startup banner |
 | `--main-class` | No | `null` | Fully-qualified custom main class annotated with `@QuarkusMain` |
 | `--native-builder-image` | No | `null` | Native builder image for `platform.quarkus.native.builder-image` |
@@ -142,7 +142,7 @@ com.clementguillot.quarkifier
 ├── dev/                            Dev mode
 │   ├── DevModeLauncher             Builds DevModeContext, launches subprocess
 │   ├── AppModelSerializerStrategy  Interface for version-specific model serialization
-│   └── AppModelSerializerImpl      (in java_3_27/ or java_3_33/) Version-specific implementation
+│   └── AppModelSerializerImpl      (in java_3_27/, java_3_33/, or java_3_39/) Version-specific implementation
 │
 └── watcher/                        File watching for hot-reload
     └── BazelFileWatcher            Watches source dirs, triggers bazel build on changes
@@ -264,7 +264,7 @@ dev, test, and native invocation requires the explicit model.
 ## Package outputs
 
 Normal augmentation supports `fast-jar`, `uber-jar`, `mutable-jar`,
-`legacy-jar`, and (with Quarkus 3.33) `aot-jar`. A stable
+`legacy-jar`, and (with Quarkus 3.33 or newer) `aot-jar`. A stable
 `quarkus-run.jar` name is requested for every layout so Bazel launchers and
 integration tests never need to discover a configurable runner suffix. Fast,
 mutable, and AOT layouts place it under `quarkus-app/`; Uber and legacy place
