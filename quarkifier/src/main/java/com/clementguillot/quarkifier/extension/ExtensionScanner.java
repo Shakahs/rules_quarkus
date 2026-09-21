@@ -3,6 +3,7 @@ package com.clementguillot.quarkifier.extension;
 import com.clementguillot.quarkifier.model.transport.BazelArtifactCoordinates;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -78,6 +79,25 @@ public final class ExtensionScanner {
   }
 
   private static ExtensionInfo scanJar(Path jarPath, String runtimeCoordinate) throws IOException {
+    // A classpath root is a directory of classes as readily as a jar of them: the
+    // test lifecycle names local targets by the class directory the application
+    // model describes them by. The descriptor is the same file either way.
+    if (Files.isDirectory(jarPath)) {
+      Path descriptor = jarPath.resolve(EXTENSION_PROPERTIES_PATH);
+      if (!Files.isRegularFile(descriptor)) {
+        return null;
+      }
+      try (InputStream is = Files.newInputStream(descriptor)) {
+        Properties props = new Properties();
+        props.load(is);
+        ExtensionInfo extension = parseDescriptor(props, jarPath, runtimeCoordinate);
+        if (extension == null) {
+          throw new IOException(
+              "Quarkus extension descriptor in " + jarPath + " has no deployment-artifact property");
+        }
+        return extension;
+      }
+    }
     try (JarFile jarFile = new JarFile(jarPath.toFile())) {
       ZipEntry entry = jarFile.getEntry(EXTENSION_PROPERTIES_PATH);
       if (entry == null) {

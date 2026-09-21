@@ -240,6 +240,8 @@ def write_runfiles_paths_file(ctx, name_suffix, files, separator):
     """
     out = ctx.actions.declare_file(ctx.label.name + name_suffix)
     args = ctx.actions.args()
-    args.add_joined(files, join_with = separator, map_each = short_path)
+    # A class directory is one classpath entry. Args expands a directory into the
+    # files under it unless told otherwise.
+    args.add_joined(files, join_with = separator, map_each = short_path, expand_directories = False)
     ctx.actions.write(output = out, content = args)
     return out
