@@ -204,7 +204,8 @@ class BazelModelInputReaderTest {
           "edges":[{
             "targetId":"@@maven//:g_a","relation":"deps","scope":"compile",\
             "optional":false,"exclusions":[]
-          }]
+          }],
+          "testOnly":false
         }
         """;
   }

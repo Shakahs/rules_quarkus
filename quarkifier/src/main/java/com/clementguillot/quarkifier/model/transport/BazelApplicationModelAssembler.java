@@ -332,6 +332,10 @@ public final class BazelApplicationModelAssembler {
                 paths,
                 fragment.workspaceTarget() ? id : null,
                 fragment.bazelLabel());
+        // A workspace target is described by its class directory, but its extension
+        // descriptor is read from the jars that directory is merged from.
+        node.archives =
+            fragment.runtimeOutputJars().stream().map(FileReference::path).sorted().toList();
         addNode(node);
         runtimeNodeIds.add(id);
         runtimeNodesByGACT.putIfAbsent(gact(coordinates), node);
@@ -1133,7 +1137,7 @@ public final class BazelApplicationModelAssembler {
 
     private String extensionDeployment(MutableNode node) throws IOException {
       String result = null;
-      for (String rawPath : node.paths) {
+      for (String rawPath : node.archives) {
         if (rawPath.endsWith(".jar")) {
           Optional<Properties> descriptor = ExtensionDescriptorReader.readFromJar(Path.of(rawPath));
           if (descriptor.isPresent()) {
@@ -1535,6 +1539,13 @@ public final class BazelApplicationModelAssembler {
     private NodeKind kind;
     private ArtifactCoordinates coordinates;
     private final List<String> paths;
+
+    /**
+     * The jars the node's classes were packaged into, where Quarkus's extension descriptor is
+     * read from. The same as {@link #paths} unless the node is described by a class directory.
+     */
+    private List<String> archives;
+
     private final Map<String, DependencyEdge> edges = new LinkedHashMap<>();
     private final Map<String, DependencyEdge> declaredEdges = new LinkedHashMap<>();
     private final String workspaceId;
@@ -1558,6 +1569,7 @@ public final class BazelApplicationModelAssembler {
       this.kind = kind;
       this.coordinates = coordinates;
       this.paths = List.copyOf(paths);
+      this.archives = this.paths;
       this.workspaceId = workspaceId;
       this.bazelLabel = bazelLabel;
     }

@@ -1019,6 +1019,9 @@ class BazelApplicationModelAssemblerTest {
 
   private Path jar(String name, String deploymentArtifact) throws IOException {
     Path path = tempDir.resolve(name);
+    // The aspect declares a workspace target's class directory beside its jar, and in dev and
+    // test modes the model builder resolves it to its real path, which requires it to exist.
+    Files.createDirectories(tempDir.resolve(name + ".quarkus-classes"));
     try (var output = new JarOutputStream(Files.newOutputStream(path))) {
       output.putNextEntry(new JarEntry("marker"));
       output.write(1);
