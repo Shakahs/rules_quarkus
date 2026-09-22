@@ -5,6 +5,7 @@ import com.clementguillot.quarkifier.BuildProperties;
 import com.clementguillot.quarkifier.QuarkifierConfig;
 import com.clementguillot.quarkifier.maven.MavenCoordinateParser;
 import com.clementguillot.quarkifier.watcher.BazelFileWatcher;
+import com.clementguillot.quarkifier.watcher.ProjectFileMirror;
 import io.quarkus.bootstrap.BootstrapConstants;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.ApplicationModel;
@@ -75,9 +76,14 @@ public final class DevModeLauncher {
 
       // Dev jar mirrors Maven's DevMojo / DevModeCommandLineBuilder.
       Path devJar = createDevJar(context, config, appModel);
-      // Populate the mutable classes directory before Quarkus performs its initial scan. Starting
-      // the child first creates a race where the application can boot without any user classes.
-      BazelFileWatcher watcher = startWatcherIfConfigured(config);
+      // Mirror the project files and populate the mutable classes directory before Quarkus
+      // performs its initial scan. Starting the child first creates a race where the application
+      // can boot without any user classes, or with the previous session's project files.
+      ProjectFileMirror projectFiles = new ProjectFileMirror(config.projectFiles());
+      if (!projectFiles.isEmpty()) {
+        projectFiles.mirror();
+      }
+      BazelFileWatcher watcher = startWatcherIfConfigured(config, projectFiles);
       Process process = null;
       try {
         process = startDevProcess(config, serializedModel, devJar);
@@ -158,8 +164,8 @@ public final class DevModeLauncher {
   }
 
   /** Starts the hot-reload file watcher when classes dir, targets, and source dirs are set. */
-  private static BazelFileWatcher startWatcherIfConfigured(QuarkifierConfig config)
-      throws Exception {
+  private static BazelFileWatcher startWatcherIfConfigured(
+      QuarkifierConfig config, ProjectFileMirror projectFiles) throws Exception {
     if (config.classesDir() == null
         || config.bazelTargets().isEmpty()
         || (config.sourceDirs().isEmpty()
@@ -169,7 +175,7 @@ public final class DevModeLauncher {
       return null;
     }
     LOGGER.debug("[hot-reload] Starting file watcher...");
-    return BazelFileWatcher.startInBackground(config);
+    return BazelFileWatcher.startInBackground(config, projectFiles);
   }
 
   /**

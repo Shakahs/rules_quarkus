@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
@@ -168,6 +169,35 @@ class QuarkifierConfigTest {
             "--codegen-input-dirs", "src/main,schemas/src/main");
     assertEquals(
         List.of(Path.of("src/main"), Path.of("schemas/src/main")), config.codegenInputDirs());
+  }
+
+  @Test
+  void parse_projectFilesKeepDeclarationOrder() {
+    var config =
+        parse(
+            "--application-classpath", "a.jar",
+            "--output-dir", "/out",
+            "--project-files",
+                "/exec/bazel-out/k8-fastbuild/bin/web/js/main_dev.js=/ws/web/jvm/web/scalajs,"
+                    + "/exec/bazel-out/k8-fastbuild/bin/web/style.css=/ws/web/jvm/web/css");
+    assertEquals(
+        List.of(
+            Map.entry(
+                Path.of("/exec/bazel-out/k8-fastbuild/bin/web/js/main_dev.js"),
+                Path.of("/ws/web/jvm/web/scalajs")),
+            Map.entry(
+                Path.of("/exec/bazel-out/k8-fastbuild/bin/web/style.css"),
+                Path.of("/ws/web/jvm/web/css"))),
+        List.copyOf(config.projectFiles().entrySet()));
+  }
+
+  @Test
+  void parse_absentProjectFilesDefaultsToEmptyMap() {
+    var config =
+        parse(
+            "--application-classpath", "a.jar",
+            "--output-dir", "/out");
+    assertTrue(config.projectFiles().isEmpty());
   }
 
   @Test

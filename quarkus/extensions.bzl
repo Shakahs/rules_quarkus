@@ -589,7 +589,7 @@ def quarkus_java_library(name, srcs = [], resources = [], deps = [], codegen_src
         **java_kwargs
     )
 
-def quarkus_app(name, dev = True, dev_build_args = [], dev_watch_dirs = [], native = False, native_container_build = False,
+def quarkus_app(name, dev = True, dev_build_args = [], dev_project_files = {{}}, dev_watch_dirs = [], native = False, native_container_build = False,
                 native_container_runtime = "auto", native_builder_image = _DEFAULT_BUILDER_IMAGE,
                 package_type = "fast-jar", build_properties = {{}}, **kwargs):
     \"\"\"Builds a Quarkus application with optional dev-mode and native targets.
@@ -605,6 +605,13 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_watch_dirs = [], nati
         dev_build_args: Extra flags for the hot-reload `bazel build` (e.g. ["--config=dev"]).
             Must match the flags you pass to `bazel run` for the dev target, otherwise
             rebuilt classes land in a different output tree and hot-reload syncs stale files.
+        dev_project_files: Built files the application reads from its project directory
+            rather than its classpath, keyed by target and valued by the workspace-relative
+            directory the outputs are mirrored into for the dev session
+            (e.g. {{"//web/js:main_dev": "web/jvm/web/scalajs"}}). The session owns each
+            directory and deletes whatever else it holds. The outputs are built in the dev
+            configuration, rebuilt with the dev target on every hot-reload rebuild, and
+            mirrored after it, a changed file rewritten in place.
         dev_watch_dirs: Workspace-relative directories the hot-reload watcher observes beyond
             the source roots derived from `deps` (e.g. ["web/js/src/main/scala"]). Sources that
             reach the application as a built asset rather than as a classpath entry have no
@@ -663,6 +670,7 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_watch_dirs = [], nati
             name = name + "_dev",
             core_deployment_deps = _CORE_DEPLOYMENT_DEPS,
             dev_build_args = dev_build_args,
+            dev_project_files = dev_project_files,
             dev_watch_dirs = dev_watch_dirs,
             **common
         )

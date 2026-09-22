@@ -226,8 +226,7 @@ them, copying changed files out of the source tree itself, and scans the classes
 directory only when it has none. Declaring the workspace's resource directories would
 therefore leave everything Bazel writes into the mutable directory unwatched, and an
 extension that watches by classpath location would never see a rebuild — the Web
-Bundler registers exactly such a watch over its web root, which is how a relinked
-browser module reaches the running application.
+Bundler registers exactly such a watch over its web root.
 
 The cost is that a resource edit is delivered by a rebuild rather than copied straight
 out of the source tree, so it takes as long as one. `BazelFileWatcher` therefore
@@ -243,8 +242,8 @@ directory, not only `.class` files. An application archive also holds the resour
 Quarkus and its extensions read from the classpath, and an extension can watch those
 by classpath location: the Web Bundler registers a
 `HotDeploymentWatchedFileBuildItem` over everything under its web root, so a rebuilt
-browser bundle reaches the running application through exactly the path a rebuilt
-class does. Only jar packaging metadata is dropped — a manifest or signature file
+asset reaches the running application through exactly the path a rebuilt class does —
+by restarting it (see project files below for the alternative). Only jar packaging metadata is dropped — a manifest or signature file
 describes nothing in a class tree assembled from several jars.
 
 Unchanged entries are not rewritten. The dev loop syncs thousands of files where a
@@ -255,8 +254,102 @@ application.
 An application that wants a different artifact in the dev loop than the one it
 packages selects on `@rules_quarkus//quarkus:dev_lifecycle`, which is true
 throughout the dev target's graph — a fast unoptimized link of a browser module in
-place of the whole-program one, for instance. The artifact still reaches the
-application as a classpath entry; only its contents differ.
+place of the whole-program one, for instance.
+
+### Project files: outputs the application reads from its project directory
+
+A classpath change is not always the cheapest reload an extension offers. The Web
+Bundler watches everything on the classpath under its web root with
+`restartNeeded(true)`, so a rebuilt browser module delivered by the sync restarts the
+application. The same file in the module's local web directory (`<module>/web`,
+resolved against the project root) is something the bundler symlinks into its staging
+directory and watches itself: a modification re-bundles and live-reloads the browser
+without a restart, whereas an addition or removal still triggers a rescan and restart.
+
+`dev_project_files` delivers outputs that way. It maps targets, built in the dev
+configuration, to workspace directories:
+
+```starlark
+quarkus_app(
+    name = "app",
+    dev_project_files = {"//web/js:main_dev": "web/jvm/web/scalajs"},
+    ...
+)
+```
+
+`ProjectFileMirror` brings each directory in line with its outputs before the
+application starts and again after every successful hot-reload rebuild, right after the
+class sync.
+The directory belongs to the session: after a mirror it holds exactly the files of its
+outputs, and anything else in it is deleted, so it must be a directory of its own and
+never one holding checked-in files. That exact mirroring is what makes a restarted
+session correct: files a previous session left behind are gone after the first mirror.
+
+The mirror decides what the application's watcher sees, so it writes deliberately:
+
+- A changed file is truncated and rewritten through its existing inode. Quarkus's
+  `WatchServiceFileSystemWatcher` reports a rename onto an existing file as an addition,
+  so the write-to-temp-and-rename that is usually safer would turn every edit into a
+  restart.
+- A file whose content is unchanged is not touched, and an output whose modification
+  time and size match the previous mirror is not even read. A browser module split into
+  many small modules then reaches the bundler as modifications of only the modules the
+  edit changed.
+- Existing files are rewritten first, new files created next, and extraneous ones
+  deleted last.
+
+Symlinking the outputs into the directory does not work: the bundler watches the link,
+and Bazel replacing the file behind it produces no event there. Changes the mirror
+makes are also excluded from `BazelFileWatcher`, so a directory under a watched root
+cannot make the mirror's writes trigger another build.
+
+Because the prod build packages the same asset on the classpath, a rule usually
+selects on `@rules_quarkus//quarkus:dev_lifecycle` to leave it out of the dev jar.
+Otherwise both copies reach the bundler.
+
+### Incremental Scala.js modules
+
+A browser module written in Scala.js is the usual project file, and the usual cost of
+a dev-loop edit is not the mirror but the build behind it: a full compile of the
+module's target and a cold link of the whole program. `scala_js_dev_module`
+(`@com_clementguillot_rules_quarkus//quarkus/scalajs:defs.bzl`) compiles the module
+with zinc and links it with an incremental, unoptimized linker into one ES module
+(`main.js` in the rule's output directory), keeping the state of both between builds:
+
+```starlark
+scala_js_dev_module(
+    name = "main_dev",
+    srcs = glob(["src/main/scala/**/*.scala"]),
+    main_class = "my.app.Main",   # its no-argument `main` runs when the module loads
+    deps = [":ui", "@maven//:org_scala_js_scalajs_library_2_13", ...],
+    scalacopts = [...],
+)
+```
+
+- **The state directory is the contract.** Zinc's analysis, the class, TASTy and IR
+  files it produced, and the sources extracted from source jars live in
+  `<name>.state` beside the output. Any process reads them, so the action is correct
+  run fresh every time; a change of compiler or bridge wipes them. The action is
+  `no-sandbox` and `no-remote`, since the directory is local by nature.
+- **Worker mode is an optimization.** With `--strategy=ScalaJSDevModule=worker`, one
+  resident process also keeps the compiler's class loaders and the linker's IR cache
+  warm, so dependency jars are not re-read after the first build.
+- **Failed compiles keep the last good state.** The class-file manager is
+  transactional, and Scala.js IR and TASTy are managed as class files, so a compile
+  error restores the previous products and a deleted class takes its IR with it.
+- **The toolchain is the consumer's.** Register a `toolchain()` of type
+  `@com_clementguillot_rules_quarkus//quarkus/scalajs:toolchain_type` wrapping a
+  `scala_js_dev_toolchain` that names the compiler bridge
+  (`org.scala-lang:scala3-sbt-bridge` at the compiler's version, whose closure is the
+  compiler), zinc (`org.scala-sbt:zinc_2.13`), and the Scala.js linker and logging
+  jars at a version no older than the Scala.js libraries being linked. The tool is
+  compiled against zinc 1.12 and the linker's public API, and reaches the linker
+  reflectively (its `org.scalajs.linker.interface` package has a name Java source
+  cannot spell).
+
+Point `dev_project_files` at the target to mirror its `main.js` into the local web
+directory; an edit then costs the zinc increment plus an incremental link, and the page
+re-bundles without a restart.
 
 ### Generated sources
 

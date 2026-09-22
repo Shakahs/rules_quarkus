@@ -19,6 +19,7 @@ BUILD_PROPERTIES_FILE="${RUNFILES_DIR}/%{workspace}/%{build_properties_file}"
 CORE_DEPLOY_CP_FILE="${RUNFILES_DIR}/%{workspace}/%{core_deploy_cp_file}"
 LOCAL_APP_JARS_FILE="${RUNFILES_DIR}/%{workspace}/%{local_app_jars_file}"
 MODEL_FILE="${RUNFILES_DIR}/%{workspace}/%{model_file}"
+PROJECT_FILES_FILE="${RUNFILES_DIR}/%{workspace}/%{project_files_file}"
 MAIN_CLASS=%{main_class}
 
 # Build absolute-path classpath files for quarkifier (avoids E2BIG on Linux).
@@ -115,6 +116,17 @@ _join_comma() {
   local IFS=','
   printf '%s' "$*"
 }
+
+# Resolve the dev_project_files pairs: each output's path under the execution root, which
+# a hot-reload rebuild rewrites, to the workspace directory the quarkifier mirrors it into.
+PROJECT_FILES_VALUE=""
+if [ -s "$PROJECT_FILES_FILE" ]; then
+    PF_ABS=()
+    while IFS=$'\t' read -r pf_output pf_dir; do
+        PF_ABS+=("${MODEL_EXEC_ROOT}/${pf_output}=${WORKSPACE_ROOT}/${pf_dir}")
+    done < "$PROJECT_FILES_FILE"
+    PROJECT_FILES_VALUE=$(_join_comma "${PF_ABS[@]}")
+fi
 
 # Resolve resource dirs to absolute paths, keeping only ones that exist
 if [ -n "$RESOURCE_DIRS" ]; then
@@ -244,6 +256,10 @@ _JAVA_ARGFILE=$(mktemp "${OUTPUT_DIR}/quarkus_dev_args_XXXXXX")
   if [ -n "$RESOURCES_VALUE" ]; then
     echo "--resources"
     _q "$RESOURCES_VALUE"
+  fi
+  if [ -n "$PROJECT_FILES_VALUE" ]; then
+    echo "--project-files"
+    _q "$PROJECT_FILES_VALUE"
   fi
   for arg in ${HOT_RELOAD_ARGS[@]+"${HOT_RELOAD_ARGS[@]}"}; do
     _q "$arg"

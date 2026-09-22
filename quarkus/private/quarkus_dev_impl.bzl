@@ -71,6 +71,30 @@ def _write_csv_file(ctx, name_suffix, values):
     ctx.actions.write(output = out, content = ",".join(values))
     return out
 
+def _collect_project_files(ctx):
+    """Pairs each dev_project_files output with the workspace directory it is mirrored into.
+
+    Args:
+        ctx: Rule context for the dev target.
+    Returns:
+        A struct of `lines` ("<exec path>\\t<directory>", one per output) and `files`,
+        the depset of those outputs.
+    """
+    lines = []
+    outputs = []
+    for target, directory in ctx.attr.dev_project_files.items():
+        if not directory or directory.startswith("/") or ".." in directory.split("/") or "\t" in directory or "\n" in directory:
+            fail("dev_project_files: '{}' must be a workspace-relative directory; got '{}'".format(target.label, directory))
+        for output in target[DefaultInfo].files.to_list():
+            lines.append("{}\t{}".format(output.path, directory))
+            outputs.append(output)
+    return struct(lines = lines, files = depset(outputs))
+
+def _write_project_files_file(ctx, lines):
+    out = ctx.actions.declare_file(ctx.label.name + "_project_files.txt")
+    ctx.actions.write(output = out, content = "".join([line + "\n" for line in lines]))
+    return out
+
 def _quarkus_dev_impl(ctx):
     if not ctx.attr.deps:
         fail("quarkus_dev rule '{}' requires at least one dependency in 'deps'".format(ctx.label.name))
@@ -91,6 +115,7 @@ def _quarkus_dev_impl(ctx):
     )
     codegen_input_dirs = collect_codegen_input_dirs(ctx.attr.deps).to_list()
     bazel_targets = _hot_reload_bazel_target(ctx)
+    project_files = _collect_project_files(ctx)
 
     # Classpath and hot-reload metadata files, read by the launcher at runtime
     # and resolved against the runfiles tree.
@@ -105,6 +130,7 @@ def _quarkus_dev_impl(ctx):
         bazel_targets = _write_csv_file(ctx, "_bazel_targets.txt", bazel_targets),
         classes_output_dirs = _write_csv_file(ctx, "_classes_output_dirs.txt", _collect_classes_output_dirs(ctx.attr.deps, runtime_classpath)),
         codegen_input_dirs = _write_csv_file(ctx, "_codegen_input_dirs.txt", codegen_input_dirs),
+        project_files = _write_project_files_file(ctx, project_files.lines),
     )
 
     tool_jar = ctx.file.quarkifier_tool
@@ -124,9 +150,12 @@ def _quarkus_dev_impl(ctx):
             files.bazel_targets,
             files.classes_output_dirs,
             files.codegen_input_dirs,
+            files.project_files,
             model,
         ] + ctx.files.deployment_artifacts,
-        transitive_files = depset(transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deployment_classpath, core_deployment_classpath, java_runtime.files]),
+        # The project files ride in the runfiles so that building the dev target — which is
+        # what the hot-reload watcher does — rebuilds them too.
+        transitive_files = depset(transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deployment_classpath, core_deployment_classpath, java_runtime.files, project_files.files]),
     )
 
     return [
@@ -160,6 +189,7 @@ def _write_dev_launcher(ctx, tool_jar, files, model_file, java_runtime):
             "%{local_app_jars_file}": files.local_app_jars.short_path,
             "%{main_class}": shell.quote(ctx.attr.main_class),
             "%{model_file}": model_file.short_path,
+            "%{project_files_file}": files.project_files.short_path,
             "%{resource_dirs_file}": files.resource_dirs.short_path,
             "%{source_dirs_file}": files.source_dirs.short_path,
             "%{watch_dirs_file}": files.watch_dirs.short_path,
@@ -225,6 +255,30 @@ application as a built asset rather than as a classpath entry — a linked Scala
 module, say — have no dependency edge to derive a source root from, so the
 application names them here. A change below one of them rebuilds the dev target
 exactly as a change to a derived source root does.
+""",
+        ),
+        "dev_project_files": attr.label_keyed_string_dict(
+            allow_files = True,
+            cfg = dev_lifecycle_transition,
+            doc = """\
+Built files the application reads from its project directory rather than its
+classpath, keyed by target and valued by the workspace-relative directory each
+target's outputs are mirrored into (e.g. {"//web/js:main_dev": "web/jvm/web/scalajs"}).
+
+Each directory belongs to the dev session: after every mirror it holds exactly
+the files of its outputs — a directory output contributes its entries at their
+relative paths, a file output contributes itself under its own name — and
+anything else in it is deleted, so name a directory of its own rather than one
+holding checked-in files. The quarkifier mirrors at startup and after every
+hot-reload rebuild. A changed file is rewritten in place and an unchanged one is
+left alone, so the application's own watcher sees an edit as a modification of
+the files it touched.
+
+Some extensions reload a project-directory file in place but restart the
+application for the same file on the classpath: the Web Bundler, for one,
+watches its local web directory and re-bundles a modified asset without a
+restart, while a classpath asset under its web root restarts the application.
+The outputs are built in the dev configuration and rebuilt with the dev target.
 """,
         ),
         "dev_build_args": attr.string_list(

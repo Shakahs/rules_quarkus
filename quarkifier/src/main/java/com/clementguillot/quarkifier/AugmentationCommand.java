@@ -6,6 +6,8 @@ import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -184,6 +186,14 @@ public final class AugmentationCommand implements Callable<Integer> {
       split = ",")
   private List<Path> codegenInputDirs;
 
+  @Option(
+      names = "--project-files",
+      description =
+          "Comma-separated <output>=<directory> pairs: built outputs mirrored into the project"
+              + " directory each belongs to, at startup and after every hot-reload rebuild.",
+      split = ",")
+  private Map<Path, Path> projectFiles;
+
   // ---- Execution ----
 
   @Override
@@ -259,6 +269,9 @@ public final class AugmentationCommand implements Callable<Integer> {
         bazelCommand,
         orEmpty(bazelBuildArgs),
         orEmpty(codegenInputDirs),
+        projectFiles == null
+            ? Map.of()
+            : Collections.unmodifiableMap(new LinkedHashMap<>(projectFiles)),
         resolvedLocalJars,
         resolvedBuildProperties,
         applicationModel);

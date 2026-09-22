@@ -69,6 +69,9 @@ public final class BazelFileWatcher implements Closeable {
    */
   private final List<Path> reloadableClassesOutputDirs;
 
+  /** The built outputs the application reads from its project directory, re-mirrored per build. */
+  private final ProjectFileMirror projectFiles;
+
   /**
    * Creates a new file watcher. The {@link WatchService} is created eagerly; call {@link #close()}
    * to release it.
@@ -77,7 +80,20 @@ public final class BazelFileWatcher implements Closeable {
    * @throws IOException if the watch service cannot be created
    */
   BazelFileWatcher(QuarkifierConfig config) throws IOException {
+    this(config, new ProjectFileMirror(config.projectFiles()));
+  }
+
+  /**
+   * Creates a new file watcher that re-mirrors {@code projectFiles} after every successful rebuild.
+   *
+   * @param config the quarkifier configuration
+   * @param projectFiles the mirror of the configuration's project files, already brought up to date
+   *     by the launcher
+   * @throws IOException if the watch service cannot be created
+   */
+  BazelFileWatcher(QuarkifierConfig config, ProjectFileMirror projectFiles) throws IOException {
     this.config = config;
+    this.projectFiles = projectFiles;
     this.reloadableClassesOutputDirs = ClassSyncer.excludeExtensionJars(config.classesOutputDirs());
     this.watchService = FileSystems.getDefault().newWatchService();
     this.debounceExecutor =
@@ -113,7 +129,21 @@ public final class BazelFileWatcher implements Closeable {
    * @throws IOException if the watch service cannot be created or initial population fails
    */
   public static BazelFileWatcher startInBackground(QuarkifierConfig config) throws IOException {
-    BazelFileWatcher watcher = new BazelFileWatcher(config);
+    return startInBackground(config, new ProjectFileMirror(config.projectFiles()));
+  }
+
+  /**
+   * Starts the file watcher in a daemon thread, re-mirroring {@code projectFiles} after every
+   * successful rebuild.
+   *
+   * @param config the quarkifier configuration containing source dirs, classes dir, etc.
+   * @param projectFiles the mirror of the configuration's project files
+   * @return the watcher instance (call {@link #close()} to stop)
+   * @throws IOException if the watch service cannot be created or initial population fails
+   */
+  public static BazelFileWatcher startInBackground(
+      QuarkifierConfig config, ProjectFileMirror projectFiles) throws IOException {
+    BazelFileWatcher watcher = new BazelFileWatcher(config, projectFiles);
     try {
       // Step 1: Populate initial classes FIRST (can take time, must complete before watching)
       LOGGER.debug("[hot-reload] Populating initial classes...");
@@ -223,6 +253,9 @@ public final class BazelFileWatcher implements Closeable {
         }
       }
 
+      if (projectFiles.owns(changed)) {
+        continue;
+      }
       if (isCompiledSource(changed) || isResource(changed) || isCodegenInput(changed)) {
         rebuildNeeded = true;
         LOGGER.debugf("Change detected: %s (%s)", changed, kind.name());
@@ -340,6 +373,7 @@ public final class BazelFileWatcher implements Closeable {
           if (success) {
             warnIfOutputsWentStale(start);
             syncClasses();
+            mirrorProjectFiles();
             LOGGER.debugf("[hot-reload] Build successful, classes synced (%dms)", elapsed);
           } else {
             LOGGER.warn("[hot-reload] Build failed, skipping sync");
@@ -483,6 +517,22 @@ public final class BazelFileWatcher implements Closeable {
       LOGGER.debug("[hot-reload] Classes synced successfully");
     } catch (IOException e) {
       LOGGER.errorf("[hot-reload] Failed to sync classes: %s", e.getMessage());
+    }
+  }
+
+  /**
+   * Re-mirrors the project files from the outputs the rebuild just refreshed. They are mirrored
+   * after the classes so a rebuild that changed both reaches the application in one reload.
+   */
+  void mirrorProjectFiles() {
+    if (projectFiles.isEmpty()) {
+      return;
+    }
+    try {
+      int changes = projectFiles.mirror();
+      LOGGER.debugf("[hot-reload] Project files mirrored (%d changed)", changes);
+    } catch (IOException e) {
+      LOGGER.errorf("[hot-reload] Failed to mirror project files: %s", e.getMessage());
     }
   }
 

@@ -30,6 +30,8 @@ import java.util.Map;
  * @param bazelCommand bazel binary to invoke for hot-reload builds (default: {@code bazel})
  * @param bazelBuildArgs extra flags for the hot-reload {@code bazel build}
  * @param codegenInputDirs directories holding the declared CodeGenProvider inputs
+ * @param projectFiles built outputs (files or directories) to the project directory each is
+ *     mirrored into for the dev session
  * @param localAppJars local workspace jars to use as application roots
  * @param buildProperties declared hermetic build-time configuration
  * @param applicationModel explicit validated Bazel model JSON
@@ -54,6 +56,7 @@ public record QuarkifierConfig(
     String bazelCommand,
     List<String> bazelBuildArgs,
     List<Path> codegenInputDirs,
+    Map<Path, Path> projectFiles,
     List<Path> localAppJars,
     Map<String, String> buildProperties,
     Path applicationModel) {}
