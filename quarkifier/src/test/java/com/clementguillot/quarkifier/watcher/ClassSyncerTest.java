@@ -38,17 +38,24 @@ class ClassSyncerTest {
   }
 
   @Test
-  void populateClassesDir_ignoresNonClassFiles() throws IOException {
+  void populateClassesDir_copiesResourcesButNotJarMetadata() throws IOException {
     Path outputDir = tempDir.resolve("bazel-bin/pkg/lib");
     Path classFile = outputDir.resolve("com/example/Foo.class");
     Files.createDirectories(classFile.getParent());
     Files.writeString(classFile, "bytecode");
 
-    Path javaFile = outputDir.resolve("com/example/Foo.java");
-    Files.writeString(javaFile, "source");
+    // Resources an extension reads from the classpath travel with the classes.
+    Path webAsset = outputDir.resolve("web/app.js");
+    Files.createDirectories(webAsset.getParent());
+    Files.writeString(webAsset, "export {};");
 
-    Path txtFile = outputDir.resolve("com/example/readme.txt");
-    Files.writeString(txtFile, "text");
+    Path manifest = outputDir.resolve("META-INF/MANIFEST.MF");
+    Files.createDirectories(manifest.getParent());
+    Files.writeString(manifest, "Manifest-Version: 1.0");
+    Files.writeString(outputDir.resolve("META-INF/SIGNER.SF"), "signature");
+    Path pom = outputDir.resolve("META-INF/maven/com.example/lib/pom.xml");
+    Files.createDirectories(pom.getParent());
+    Files.writeString(pom, "<project/>");
 
     Path classesDir = tempDir.resolve("classes");
     Files.createDirectories(classesDir);
@@ -56,8 +63,10 @@ class ClassSyncerTest {
     ClassSyncer.populateClassesDir(List.of(outputDir), classesDir);
 
     assertTrue(Files.exists(classesDir.resolve("com/example/Foo.class")));
-    assertFalse(Files.exists(classesDir.resolve("com/example/Foo.java")));
-    assertFalse(Files.exists(classesDir.resolve("com/example/readme.txt")));
+    assertEquals("export {};", Files.readString(classesDir.resolve("web/app.js")));
+    assertFalse(Files.exists(classesDir.resolve("META-INF/MANIFEST.MF")));
+    assertFalse(Files.exists(classesDir.resolve("META-INF/SIGNER.SF")));
+    assertFalse(Files.exists(classesDir.resolve("META-INF/maven/com.example/lib/pom.xml")));
   }
 
   @Test
