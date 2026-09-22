@@ -9,15 +9,18 @@ import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
 import io.quarkus.maven.dependency.DependencyFlags;
 import io.quarkus.maven.dependency.ResolvedDependencyBuilder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** Unit tests for {@link DevModeLauncher#buildDevModeContext}. */
+/** Unit tests for {@link DevModeLauncher}: the dev context, the child JVM and its classpath. */
 class DevModeLauncherTest {
 
   /** Builds a dev-mode config from the baseline flags plus {@code extraArgs}. */
@@ -222,6 +225,73 @@ class DevModeLauncherTest {
     assertEquals(
         Path.of("app.jar").toAbsolutePath().toString(),
         context.getApplicationRoot().getMain().getClassesPath());
+  }
+
+  @Test
+  void devProcessCommand_loadsTheClassChangeAgentAsAJavaAgent(@TempDir Path tempDir)
+      throws Exception {
+    Path core = deploymentJar(tempDir, "quarkus-core-deployment");
+    Path agentJar = deploymentJar(tempDir, "quarkus-class-change-agent");
+    var config = devConfig("--core-deployment-classpath", core + ":" + agentJar);
+
+    List<String> cmd =
+        DevModeLauncher.devProcessCommand(config, Path.of("model.dat"), Path.of("dev.jar"));
+
+    String agent = "-javaagent:" + agentJar;
+    assertTrue(cmd.contains(agent), cmd::toString);
+    assertTrue(cmd.indexOf(agent) < cmd.indexOf("-jar"), "JVM options precede -jar: " + cmd);
+  }
+
+  @Test
+  void devProcessCommand_withoutTheAgentInTheClosure_loadsNoAgent(@TempDir Path tempDir)
+      throws Exception {
+    Path core = deploymentJar(tempDir, "quarkus-core-deployment");
+    var config = devConfig("--core-deployment-classpath", core.toString());
+
+    List<String> cmd =
+        DevModeLauncher.devProcessCommand(config, Path.of("model.dat"), Path.of("dev.jar"));
+
+    assertTrue(cmd.stream().noneMatch(arg -> arg.startsWith("-javaagent:")), cmd::toString);
+  }
+
+  @Test
+  void buildManifestClassPath_leavesTheClassChangeAgentToTheJavaAgentFlag(@TempDir Path tempDir)
+      throws Exception {
+    Path core = deploymentJar(tempDir, "quarkus-core-deployment");
+    Path agentJar = deploymentJar(tempDir, "quarkus-class-change-agent");
+    var config = devConfig("--core-deployment-classpath", core + ":" + agentJar);
+    var modelBuilder = new ApplicationModelBuilder();
+    modelBuilder.setAppArtifact(
+        ResolvedDependencyBuilder.newInstance()
+            .setGroupId("com.example")
+            .setArtifactId("app")
+            .setVersion("1.0")
+            .setType("jar")
+            .setRuntimeCp()
+            .setDeploymentCp());
+
+    String classPath = DevModeLauncher.buildManifestClassPath(config, modelBuilder.build());
+
+    assertEquals(core.toAbsolutePath().toUri().toString(), classPath);
+  }
+
+  /**
+   * An {@code io.quarkus} jar as the generated repository holds it: flat under {@code
+   * deployment/jars/}, where the path carries no groupId and the coordinates come from the jar's
+   * own {@code pom.properties}.
+   */
+  private static Path deploymentJar(Path root, String artifactId) throws Exception {
+    Path jar = root.resolve("deployment/jars/" + artifactId + "-3.39.4.jar");
+    Files.createDirectories(jar.getParent());
+    try (var out = new JarOutputStream(Files.newOutputStream(jar))) {
+      out.putNextEntry(
+          new ZipEntry("META-INF/maven/io.quarkus/" + artifactId + "/pom.properties"));
+      out.write(
+          ("groupId=io.quarkus\nartifactId=" + artifactId + "\nversion=3.39.4\n")
+              .getBytes(StandardCharsets.UTF_8));
+      out.closeEntry();
+    }
+    return jar;
   }
 
   /**

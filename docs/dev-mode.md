@@ -66,6 +66,8 @@ The manifest classpath contains two categories of jars, matching Maven's `DevMoj
 
 Everything else — extension deployment jars, runtime extension jars — is loaded by the augment classloader from the serialized `ApplicationModel`.
 
+One jar of the infrastructure closure is not on the manifest classpath: `io.quarkus:quarkus-class-change-agent`, which the child JVM loads with `-javaagent` instead, as `DevMojo` and Gradle's `QuarkusDev` load it (see [Instrumentation-based reload](#instrumentation-based-reload)). A Java agent's jar is appended to the system class path by the JVM itself.
+
 ## Declared Build Properties
 
 `quarkus_app` shares its `build_properties` map with the generated
@@ -400,6 +402,34 @@ when a successful rebuild updates none of the recorded class outputs — the tel
 sign of a configuration mismatch. The rebuild timeout defaults to 600 s
 (`--bazel-build-timeout-seconds`); on timeout or build failure, the tail of
 `bazel-hot-reload.log` is echoed to the console.
+
+### Instrumentation-based reload
+
+With `quarkus.live-reload.instrumentation=true`, Quarkus applies a change that only
+touches method bodies by redefining the changed classes in the running JVM instead of
+restarting the application: no re-augmentation, no restart of the application's beans,
+and no dropped browser live-reload connection. `RuntimeUpdatesProcessor` attempts this
+only when `ClassChangeAgent.getInstrumentation()` is set, which is the case only when
+the JVM was started with `quarkus-class-change-agent` as a Java agent: its `premain`
+stores the JVM's `Instrumentation` there.
+
+The agent is part of `quarkus-core-deployment`'s closure, so it is among the jars of
+`@rules_quarkus//deployment:core`. `DevModeLauncher` finds it there by its Maven
+coordinates (from the jar's `pom.properties`, since the generated repository's file name
+carries no groupId) and passes it as `-javaagent`, leaving it off the dev jar's
+`Class-Path`. `quarkus-core` declares the agent a parent-first artifact, so the augment
+classloader resolves `ClassChangeAgent` from the system class loader, where the agent
+registered it, rather than loading a second, empty copy.
+
+What counts as a body-only change is Quarkus's decision, made on the class files a
+rebuild syncs: added or removed methods, fields or annotations still restart the
+application. For Scala sources this is narrower than it looks, because a lambda or an
+`inline` expansion becomes a synthetic method of the enclosing class, so adding one is
+a structural change.
+
+A successful redefinition logs `Application restart not required, replacing classes via
+instrumentation`; with the property off, or without the agent, the same change restarts
+the application.
 
 ## Known Limitations
 

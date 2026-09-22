@@ -50,6 +50,9 @@ public final class DevModeLauncher {
 
   private static final Path SRC_MAIN = Path.of("src", "main");
 
+  private static final String CLASS_CHANGE_AGENT_GROUP_ID = "io.quarkus";
+  private static final String CLASS_CHANGE_AGENT_ARTIFACT_ID = "quarkus-class-change-agent";
+
   private DevModeLauncher() {}
 
   /**
@@ -133,6 +136,28 @@ public final class DevModeLauncher {
   /** Starts the child JVM running {@link DevModeMain} from the dev jar. */
   private static Process startDevProcess(QuarkifierConfig config, Path serializedModel, Path devJar)
       throws Exception {
+    ProcessBuilder pb = new ProcessBuilder(devProcessCommand(config, serializedModel, devJar));
+    if (config.workspaceDir() != null) {
+      pb.directory(config.workspaceDir().toFile());
+    }
+    pb.inheritIO();
+    return pb.start();
+  }
+
+  /**
+   * The child JVM's command line.
+   *
+   * <p>Quarkus's class-change agent, which is part of the core deployment closure, is loaded as a
+   * Java agent rather than put on the classpath, as Maven's {@code DevMojo} and Gradle's {@code
+   * QuarkusDev} load it. Its premain hands the JVM's {@link java.lang.instrument.Instrumentation}
+   * to {@code ClassChangeAgent}, and {@code RuntimeUpdatesProcessor} attempts an
+   * instrumentation-based reload (redefining changed classes in place of restarting the
+   * application, when only method bodies changed) only when that is present and {@code
+   * quarkus.live-reload.instrumentation} is enabled.
+   */
+  // Visible for testing
+  static List<String> devProcessCommand(
+      QuarkifierConfig config, Path serializedModel, Path devJar) {
     List<String> cmd = new ArrayList<>();
     cmd.add(System.getProperty("java.home") + "/bin/java");
     // Declared build properties come first so every launcher-owned setting
@@ -150,17 +175,24 @@ public final class DevModeLauncher {
     // Required for Quarkus 3.33+
     cmd.add("--add-opens");
     cmd.add("java.base/java.lang.invoke=ALL-UNNAMED");
+    classChangeAgent(config).ifPresent(agent -> cmd.add("-javaagent:" + agent.toAbsolutePath()));
     cmd.add(
         "-D" + BootstrapConstants.SERIALIZED_APP_MODEL + "=" + serializedModel.toAbsolutePath());
     cmd.add("-jar");
     cmd.add(devJar.toAbsolutePath().toString());
+    return cmd;
+  }
 
-    ProcessBuilder pb = new ProcessBuilder(cmd);
-    if (config.workspaceDir() != null) {
-      pb.directory(config.workspaceDir().toFile());
-    }
-    pb.inheritIO();
-    return pb.start();
+  /** The class-change agent jar among the core deployment jars, if the closure has one. */
+  private static Optional<Path> classChangeAgent(QuarkifierConfig config) {
+    return config.coreDeploymentClasspath().stream()
+        .filter(jar -> isClassChangeAgent(MavenCoordinateParser.parse(jar)))
+        .findFirst();
+  }
+
+  private static boolean isClassChangeAgent(MavenCoordinateParser.Coordinates coords) {
+    return CLASS_CHANGE_AGENT_GROUP_ID.equals(coords.groupId())
+        && CLASS_CHANGE_AGENT_ARTIFACT_ID.equals(coords.artifactId());
   }
 
   /** Starts the hot-reload file watcher when classes dir, targets, and source dirs are set. */
@@ -217,8 +249,12 @@ public final class DevModeLauncher {
    * <p>For jars that also exist on the application classpath, the application classpath version is
    * preferred — the ApplicationModel references that jar file, and the system classloader must use
    * the same file to avoid dual-classloader class identity conflicts.
+   *
+   * <p>The class-change agent is left out: the JVM loads it as a Java agent (see {@link
+   * #devProcessCommand}), which already places it on the system class path.
    */
-  private static String buildManifestClassPath(QuarkifierConfig config, ApplicationModel appModel) {
+  // Visible for testing
+  static String buildManifestClassPath(QuarkifierConfig config, ApplicationModel appModel) {
     Map<String, Path> appCpByArtifactId = new LinkedHashMap<>();
     for (Path jar : config.applicationClasspath()) {
       appCpByArtifactId.put(MavenCoordinateParser.parse(jar).artifactId(), jar);
@@ -228,7 +264,7 @@ public final class DevModeLauncher {
     Set<String> addedToManifest = new HashSet<>();
     for (Path jar : config.coreDeploymentClasspath()) {
       var coords = MavenCoordinateParser.parse(jar);
-      if (addedToManifest.contains(coords.artifactId())) {
+      if (addedToManifest.contains(coords.artifactId()) || isClassChangeAgent(coords)) {
         continue;
       }
       Path effectiveJar = appCpByArtifactId.getOrDefault(coords.artifactId(), jar);
