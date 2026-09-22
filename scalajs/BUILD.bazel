@@ -1,0 +1,124 @@
+"""The incremental Scala.js module tool: zinc compilation and a warm link, for dev mode.
+
+The tool is compiled against one zinc and one Scala.js linker API and run against whatever
+versions a consumer's `scala_js_dev_toolchain` names, which is why those APIs reach it
+through `neverlink` libraries: the deploy jar carries the tool, the worker protocol and
+nothing of the compiler or linker, and the rule puts the toolchain's jars on the classpath
+at run time. The test below runs the real thing, with the same artifacts on both sides.
+"""
+
+load("@rules_java//java:java_binary.bzl", "java_binary")
+load("@rules_java//java:java_library.bzl", "java_library")
+load("@rules_java//java:java_test.bzl", "java_test")
+load("//tools/lint:linters.bzl", "pmd_test")
+load(":testing.bzl", "classpath_manifest")
+
+package(default_visibility = ["//visibility:public"])
+
+# The APIs the tool is written against. Compile-only: the consumer's toolchain supplies the
+# runtime copies, at the versions matching its compiler and its Scala.js libraries.
+java_library(
+    name = "zinc_api",
+    neverlink = True,
+    exports = [
+        "@maven_scalajs//:org_scala_lang_scala_library",
+        "@maven_scalajs//:org_scala_sbt_compiler_interface",
+        "@maven_scalajs//:org_scala_sbt_util_interface",
+        "@maven_scalajs//:org_scala_sbt_zinc_2_13",
+        "@maven_scalajs//:org_scala_sbt_zinc_classpath_2_13",
+        "@maven_scalajs//:org_scala_sbt_zinc_compile_core_2_13",
+        "@maven_scalajs//:org_scala_sbt_zinc_core_2_13",
+        "@maven_scalajs//:org_scala_sbt_zinc_persist_2_13",
+    ],
+)
+
+java_library(
+    name = "linker_api",
+    neverlink = True,
+    exports = [
+        "@maven_scalajs//:org_scala_js_scalajs_linker_2_13",
+        "@maven_scalajs//:org_scala_js_scalajs_linker_interface_2_13",
+        "@maven_scalajs//:org_scala_js_scalajs_logging_2_13",
+        "@maven_scalajs//:org_scala_lang_scala_library",
+    ],
+)
+
+java_library(
+    name = "scalajs_dev_lib",
+    srcs = glob(["src/main/java/**/*.java"]),
+    deps = [
+        ":linker_api",
+        ":zinc_api",
+        "@bazel_worker_java//src/main/java/com/google/devtools/build/lib/worker:work_request_handlers",
+        "@bazel_worker_java//:worker_protocol_java_proto",
+    ],
+)
+
+java_binary(
+    name = "scalajs_dev",
+    main_class = "com.clementguillot.scalajs.dev.ScalaJsDevMain",
+    runtime_deps = [":scalajs_dev_lib"],
+)
+
+# The real toolchain, for the test: the same artifacts a consumer would name. zinc and the
+# linker go on the test's classpath, as the rule puts them on the action's; the compiler and
+# the Scala.js libraries are handed over as files, as the rule passes them.
+java_library(
+    name = "test_toolchain_runtime",
+    testonly = True,
+    exports = [
+        "@maven_scalajs//:org_scala_js_scalajs_linker_2_13",
+        "@maven_scalajs//:org_scala_js_scalajs_logging_2_13",
+        "@maven_scalajs//:org_scala_sbt_zinc_2_13",
+    ],
+)
+
+classpath_manifest(
+    name = "test_compiler_classpath",
+    testonly = True,
+    deps = ["@maven_scalajs//:org_scala_lang_scala3_sbt_bridge"],
+)
+
+classpath_manifest(
+    name = "test_library_classpath",
+    testonly = True,
+    deps = [
+        "@maven_scalajs//:org_scala_js_scalajs_library_2_13",
+        "@maven_scalajs//:org_scala_lang_scala3_library_sjs1_3",
+    ],
+)
+
+java_test(
+    name = "scalajs_dev_test",
+    size = "medium",
+    srcs = glob(["src/test/java/**/*.java"]),
+    args = [
+        "execute",
+        "--select-package=com.clementguillot.scalajs.dev",
+        "--fail-if-no-tests",
+    ],
+    data = [
+        ":test_compiler_classpath",
+        ":test_library_classpath",
+    ],
+    jvm_flags = [
+        "-Dscalajs.dev.test.compilerManifest=$(rlocationpath :test_compiler_classpath)",
+        "-Dscalajs.dev.test.libraryManifest=$(rlocationpath :test_library_classpath)",
+        "-Xmx3g",
+    ],
+    main_class = "org.junit.platform.console.ConsoleLauncher",
+    use_testrunner = False,
+    runtime_deps = [":test_toolchain_runtime"],
+    deps = [
+        ":scalajs_dev_lib",
+        "@maven_scalajs//:org_junit_jupiter_junit_jupiter",
+        "@maven_scalajs//:org_junit_platform_junit_platform_console_standalone",
+        "@maven_scalajs//:org_junit_platform_junit_platform_launcher",
+        "@rules_java//java/runfiles",
+    ],
+)
+
+pmd_test(
+    name = "pmd_test",
+    srcs = [":scalajs_dev_lib"],
+)

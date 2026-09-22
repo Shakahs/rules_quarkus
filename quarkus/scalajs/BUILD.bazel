@@ -1,0 +1,11 @@
+# The incremental Scala.js module rule and its toolchain type. See defs.bzl.
+
+toolchain_type(
+    name = "toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+exports_files(
+    ["defs.bzl"],
+    visibility = ["//visibility:public"],
+)

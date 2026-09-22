@@ -51,6 +51,9 @@ bazel_dep(name = "rules_java", version = "9.6.1")
 
 bazel_dep(name = "rules_jvm_external", version = "6.10")
 
+# The worker protocol, for the incremental Scala.js module tool (//scalajs).
+bazel_dep(name = "bazel_worker_java", version = "0.0.11")
+
 # Quarkus 3.27 LTS dependencies
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
@@ -123,3 +126,33 @@ maven.install(
     lock_file = "//:maven_install_3_39.json",
 )
 use_repo(maven, "maven_3_39")
+
+# The incremental Scala.js module tool (//scalajs). The tool is compiled against these zinc and
+# linker APIs and run against the versions a consumer's `scala_js_dev_toolchain` names; the
+# compiler, the bridge and the Scala.js libraries are here for the tool's own test, which runs
+# the real thing.
+maven.install(
+    name = "maven_scalajs",
+    artifacts = [
+        "org.scala-sbt:zinc_2.13:1.12.1",
+        "org.scala-sbt:compiler-interface:1.12.1",
+        "org.scala-sbt:util-interface:1.12.1",
+        "org.scala-js:scalajs-linker_2.13:1.22.0",
+        "org.scala-js:scalajs-linker-interface_2.13:1.22.0",
+        "org.scala-js:scalajs-logging_2.13:1.2.0",
+        # Test toolchain: a compiler, its bridge, and a Scala.js standard library.
+        "org.scala-lang:scala3-sbt-bridge:3.9.0",
+        "org.scala-lang:scala3-library_sjs1_3:3.9.0",
+        "org.scala-js:scalajs-library_2.13:1.22.0",
+        # Test framework
+        "org.junit.platform:junit-platform-launcher:6.0.3",
+        "org.junit.platform:junit-platform-console-standalone:6.0.3",
+        "org.junit.jupiter:junit-jupiter:6.0.3",
+    ],
+    known_contributing_modules = [
+        "bazel_worker_java",
+        "protobuf",
+    ],
+    lock_file = "//:maven_install_scalajs.json",
+)
+use_repo(maven, "maven_scalajs")
