@@ -56,7 +56,17 @@ quarkus_extension_deployment_classpath_aspect = aspect(
 )
 
 # Maven-layout markers used to derive source/resource roots from package paths.
+#
+# `_SOURCE_MARKERS` is what Quarkus is told the module's sources are, so it holds Java
+# alone: Quarkus compiles what it finds under a declared source path with its own
+# CompilationProvider, and a Scala root there makes it compile Scala off the dev
+# classpath beside the Bazel build that already owns that compile.
+#
+# `_WATCH_MARKERS` is what the rules' own file watcher observes. Bazel owns every
+# compile, so the watcher has to see every language Bazel compiles — a `.scala` edit
+# rebuilds the dev target exactly as a `.java` edit does.
 _SOURCE_MARKERS = ["src/main/java", "src/test/java"]
+_WATCH_MARKERS = ["src/main/java", "src/main/scala"]
 _RESOURCE_MARKERS = ["src/main/resources"]
 
 def short_path(f):
@@ -211,6 +221,30 @@ def collect_source_dir_paths(deps, runtime_classpath = None):
         A deduplicated list of workspace-relative source directory path strings.
     """
     return _collect_marker_dir_paths(deps, runtime_classpath, _SOURCE_MARKERS)
+
+def collect_watch_dir_paths(deps, runtime_classpath = None, extra_dirs = []):
+    """Derives the directories the hot-reload watcher observes.
+
+    These are the source roots of every language Bazel compiles into the application,
+    plus any directory the application declares itself — a Scala.js source tree, say,
+    which reaches the application as a linked asset rather than as a classpath entry
+    and so has no Maven-layout marker to derive.
+
+    Args:
+        deps: List of targets providing JavaInfo (direct deps).
+        runtime_classpath: Optional depset of transitive runtime jars, for the
+            source roots of local artifacts below the direct deps.
+        extra_dirs: Workspace-relative directories declared by the application.
+    Returns:
+        A deduplicated list of workspace-relative directory path strings.
+    """
+    dirs = _collect_marker_dir_paths(deps, runtime_classpath, _WATCH_MARKERS)
+    seen = {directory: True for directory in dirs}
+    for directory in extra_dirs:
+        if directory not in seen:
+            seen[directory] = True
+            dirs.append(directory)
+    return dirs
 
 def collect_resource_dir_paths(deps, runtime_classpath = None):
     """Derives candidate resource roots (src/main/resources) from deps.

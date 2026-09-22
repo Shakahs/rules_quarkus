@@ -122,6 +122,8 @@ public final class BazelFileWatcher implements Closeable {
 
       // Step 2: Register watchers on all source directories
       watcher.registerWatchers(config.sourceDirs());
+      watcher.registerWatchers(config.watchDirs());
+      watcher.registerWatchers(config.resources());
       watcher.registerWatchers(config.codegenInputDirs());
       LOGGER.debug("[hot-reload] File watchers registered");
 
@@ -221,12 +223,53 @@ public final class BazelFileWatcher implements Closeable {
         }
       }
 
-      if (changed.toString().endsWith(".java") || isCodegenInput(changed)) {
+      if (isCompiledSource(changed) || isResource(changed) || isCodegenInput(changed)) {
         rebuildNeeded = true;
         LOGGER.debugf("Change detected: %s (%s)", changed, kind.name());
       }
     }
     return rebuildNeeded;
+  }
+
+  /**
+   * Reports whether {@code changed} is a source file Bazel compiles into the application.
+   *
+   * <p>Every language in the dev target's graph counts, not only the one Quarkus knows how to
+   * compile itself: Bazel owns the compile here, so a Scala edit has to reach the same rebuild a
+   * Java edit does. Matching is on the extension rather than on the enclosing directory because a
+   * source root also holds resources and editor droppings, and rebuilding on those would queue a
+   * build for every save of an unrelated file.
+   */
+  private static boolean isCompiledSource(Path changed) {
+    if (isEditorScratchFile(changed.getFileName())) {
+      return false;
+    }
+    String name = changed.toString();
+    return name.endsWith(".java") || name.endsWith(".scala") || name.endsWith(".kt");
+  }
+
+  /**
+   * Reports whether {@code changed} is a declared resource of the application.
+   *
+   * <p>Resources reach the running application the same way classes do, through the rebuild and the
+   * sync into the mutable directory, because that directory is the only resource root Quarkus is
+   * given ({@code DevModeLauncher.buildAppModuleInfo}). Nothing else would deliver an edited
+   * resource, so the watcher has to rebuild on one.
+   *
+   * <p>Matching is on location rather than on an extension: a resource directory holds whatever the
+   * application puts there, and no extension distinguishes it.
+   */
+  private boolean isResource(Path changed) {
+    if (isEditorScratchFile(changed.getFileName())) {
+      return false;
+    }
+    Path absolute = changed.toAbsolutePath().normalize();
+    for (Path resourceDir : config.resources()) {
+      if (absolute.startsWith(resourceDir.toAbsolutePath().normalize())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -14,7 +14,7 @@ load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "write_build_properties")
-load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_resource_dir_paths", "collect_runtime_classpath", "collect_source_dir_paths", "is_local_artifact", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
+load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_resource_dir_paths", "collect_runtime_classpath", "collect_source_dir_paths", "collect_watch_dir_paths", "is_local_artifact", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
 load("//quarkus/private:coverage_transition.bzl", "dev_lifecycle_transition", "disable_coverage_transition", "single_transitioned_target")
 load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
 load("//quarkus/private:quarkus_codegen_impl.bzl", "collect_codegen_input_dirs", "quarkus_codegen_metadata_aspect")
@@ -100,6 +100,7 @@ def _quarkus_dev_impl(ctx):
         local_app_jars = write_runfiles_paths_file(ctx, "_local_app_jars.txt", depset(collect_local_app_jars(ctx.attr.deps, runtime_classpath)), ":"),
         core_deploy_cp = write_runfiles_paths_file(ctx, "_core_deploy_cp.txt", core_deployment_classpath, ":"),
         source_dirs = _write_csv_file(ctx, "_source_dirs.txt", collect_source_dir_paths(ctx.attr.deps, runtime_classpath)),
+        watch_dirs = _write_csv_file(ctx, "_watch_dirs.txt", collect_watch_dir_paths(ctx.attr.deps, runtime_classpath, ctx.attr.dev_watch_dirs)),
         resource_dirs = _write_csv_file(ctx, "_resource_dirs.txt", collect_resource_dir_paths(ctx.attr.deps, runtime_classpath)),
         bazel_targets = _write_csv_file(ctx, "_bazel_targets.txt", bazel_targets),
         classes_output_dirs = _write_csv_file(ctx, "_classes_output_dirs.txt", _collect_classes_output_dirs(ctx.attr.deps, runtime_classpath)),
@@ -118,6 +119,7 @@ def _quarkus_dev_impl(ctx):
             files.local_app_jars,
             files.core_deploy_cp,
             files.source_dirs,
+            files.watch_dirs,
             files.resource_dirs,
             files.bazel_targets,
             files.classes_output_dirs,
@@ -160,6 +162,7 @@ def _write_dev_launcher(ctx, tool_jar, files, model_file, java_runtime):
             "%{model_file}": model_file.short_path,
             "%{resource_dirs_file}": files.resource_dirs.short_path,
             "%{source_dirs_file}": files.source_dirs.short_path,
+            "%{watch_dirs_file}": files.watch_dirs.short_path,
             "%{tool_jar}": tool_jar.short_path,
             "%{workspace}": ctx.workspace_name,
         },
@@ -213,6 +216,16 @@ quarkus_dev_rule = rule(
             ],
             providers = [JavaInfo],
             doc = "java_library and Maven artifact targets.",
+        ),
+        "dev_watch_dirs": attr.string_list(
+            doc = """\
+Workspace-relative directories the hot-reload watcher observes beyond the source
+roots derived from `deps` (e.g. ["web/js/src/main/scala"]). Sources that reach the
+application as a built asset rather than as a classpath entry — a linked Scala.js
+module, say — have no dependency edge to derive a source root from, so the
+application names them here. A change below one of them rebuilds the dev target
+exactly as a change to a derived source root does.
+""",
         ),
         "dev_build_args": attr.string_list(
             doc = """\

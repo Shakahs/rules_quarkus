@@ -1,5 +1,15 @@
 # Public API package for rules_quarkus.
 
+# True throughout the dev target's graph, which `dev_lifecycle_transition` configures with
+# `codegen_lifecycle = "dev"`. An application selects on this where the dev loop wants a
+# different artifact from the one it packages — a fast, unoptimized link of a browser
+# module, say, in place of the whole-program one.
+config_setting(
+    name = "dev_lifecycle",
+    flag_values = {"//quarkus/private:codegen_lifecycle": "dev"},
+    visibility = ["//visibility:public"],
+)
+
 exports_files(
     [
         "defs.bzl",

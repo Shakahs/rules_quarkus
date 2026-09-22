@@ -19,7 +19,9 @@ import java.util.Map;
  *     be {@code null})
  * @param nativeBuilderImage the native builder image for {@code
  *     platform.quarkus.native.builder-image} (may be {@code null})
- * @param sourceDirs source directories for hot-reload in dev mode
+ * @param sourceDirs source directories declared to Quarkus as the module's sources
+ * @param watchDirs directories the hot-reload watcher observes — the source roots of every
+ *     language Bazel compiles, which Quarkus is not told about because Bazel owns those compiles
  * @param classesDir mutable directory for .class files in dev mode (may be {@code null})
  * @param bazelTargets Bazel targets to rebuild on source changes
  * @param classesOutputDirs bazel-bin output directories containing .class files
@@ -43,6 +45,7 @@ public record QuarkifierConfig(
     String mainClass,
     String nativeBuilderImage,
     List<Path> sourceDirs,
+    List<Path> watchDirs,
     Path classesDir,
     List<String> bazelTargets,
     List<Path> classesOutputDirs,

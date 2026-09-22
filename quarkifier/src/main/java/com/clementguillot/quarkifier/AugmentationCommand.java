@@ -131,6 +131,15 @@ public final class AugmentationCommand implements Callable<Integer> {
       split = ",")
   private List<Path> sourceDirs;
 
+  @Option(
+      names = "--watch-dirs",
+      description =
+          "Comma-separated directories the hot-reload watcher observes. Unlike --source-dirs,"
+              + " which tells Quarkus what the module's sources are, these cover every language"
+              + " Bazel compiles: a change below one of them rebuilds the Bazel targets.",
+      split = ",")
+  private List<Path> watchDirs;
+
   @Option(names = "--classes-dir", description = "Mutable directory for .class files in dev mode.")
   private Path classesDir;
 
@@ -241,6 +250,7 @@ public final class AugmentationCommand implements Callable<Integer> {
         mainClass,
         nativeBuilderImage,
         orEmpty(sourceDirs),
+        orEmpty(watchDirs),
         classesDir,
         orEmpty(bazelTargets),
         orEmpty(classesOutputDirs),

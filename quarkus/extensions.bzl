@@ -589,7 +589,7 @@ def quarkus_java_library(name, srcs = [], resources = [], deps = [], codegen_src
         **java_kwargs
     )
 
-def quarkus_app(name, dev = True, dev_build_args = [], native = False, native_container_build = False,
+def quarkus_app(name, dev = True, dev_build_args = [], dev_watch_dirs = [], native = False, native_container_build = False,
                 native_container_runtime = "auto", native_builder_image = _DEFAULT_BUILDER_IMAGE,
                 package_type = "fast-jar", build_properties = {{}}, **kwargs):
     \"\"\"Builds a Quarkus application with optional dev-mode and native targets.
@@ -605,6 +605,10 @@ def quarkus_app(name, dev = True, dev_build_args = [], native = False, native_co
         dev_build_args: Extra flags for the hot-reload `bazel build` (e.g. ["--config=dev"]).
             Must match the flags you pass to `bazel run` for the dev target, otherwise
             rebuilt classes land in a different output tree and hot-reload syncs stale files.
+        dev_watch_dirs: Workspace-relative directories the hot-reload watcher observes beyond
+            the source roots derived from `deps` (e.g. ["web/js/src/main/scala"]). Sources that
+            reach the application as a built asset rather than as a classpath entry have no
+            dependency edge to derive a source root from, so name them here.
         native: If True, creates a <name>_native target using rules_graalvm (host compilation).
         native_container_build: If True, creates a <name>_native target using Docker/Podman (container compilation).
         native_container_runtime: Container runtime: 'auto' (default), 'docker', or 'podman'.
@@ -659,6 +663,7 @@ def quarkus_app(name, dev = True, dev_build_args = [], native = False, native_co
             name = name + "_dev",
             core_deployment_deps = _CORE_DEPLOYMENT_DEPS,
             dev_build_args = dev_build_args,
+            dev_watch_dirs = dev_watch_dirs,
             **common
         )
     if native:

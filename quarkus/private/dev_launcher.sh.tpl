@@ -48,6 +48,15 @@ if [ -f "$SOURCE_DIRS_FILE" ]; then
     SOURCE_DIRS=$(cat "$SOURCE_DIRS_FILE")
 fi
 
+# Read the directories the hot-reload watcher observes. These are the source roots of
+# every language Bazel compiles, which is a superset of the source dirs above: those are
+# what Quarkus is told its sources are, and Quarkus compiles only Java itself.
+WATCH_DIRS_FILE="${RUNFILES_DIR}/%{workspace}/%{watch_dirs_file}"
+WATCH_DIRS=""
+if [ -f "$WATCH_DIRS_FILE" ]; then
+    WATCH_DIRS=$(cat "$WATCH_DIRS_FILE")
+fi
+
 # Read resource directories
 RESOURCE_DIRS_FILE="${RUNFILES_DIR}/%{workspace}/%{resource_dirs_file}"
 RESOURCE_DIRS=""
@@ -131,7 +140,7 @@ if [ -n "$CODEGEN_INPUT_DIRS" ]; then
     CODEGEN_INPUT_DIRS_VALUE=$(_join_comma "${CG_ABS[@]}")
 fi
 
-if [ -n "$BAZEL_TARGETS" ] && { [ -n "$SOURCE_DIRS" ] || [ -n "$CODEGEN_INPUT_DIRS_VALUE" ]; }; then
+if [ -n "$BAZEL_TARGETS" ] && { [ -n "$SOURCE_DIRS" ] || [ -n "$WATCH_DIRS" ] || [ -n "$CODEGEN_INPUT_DIRS_VALUE" ]; }; then
     CLASSES_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarkus_hotreload_classes_XXXXXX")
 
     # Resolve source dirs to absolute paths
@@ -143,6 +152,17 @@ if [ -n "$BAZEL_TARGETS" ] && { [ -n "$SOURCE_DIRS" ] || [ -n "$CODEGEN_INPUT_DI
             SD_ABS+=("${WORKSPACE_ROOT}/${sd}")
         done
         ABS_SOURCE_DIRS=$(_join_comma "${SD_ABS[@]}")
+    fi
+
+    # Resolve watch dirs to absolute paths
+    ABS_WATCH_DIRS=""
+    if [ -n "$WATCH_DIRS" ]; then
+        WD_ABS=()
+        IFS=',' read -ra WD_ENTRIES <<< "$WATCH_DIRS"
+        for wd in "${WD_ENTRIES[@]}"; do
+            WD_ABS+=("${WORKSPACE_ROOT}/${wd}")
+        done
+        ABS_WATCH_DIRS=$(_join_comma "${WD_ABS[@]}")
     fi
 
     # Resolve classes output dirs to absolute paths. Reading an empty value
@@ -163,6 +183,9 @@ if [ -n "$BAZEL_TARGETS" ] && { [ -n "$SOURCE_DIRS" ] || [ -n "$CODEGEN_INPUT_DI
     )
     if [ -n "$ABS_CLASSES_OUTPUT_DIRS" ]; then
         HOT_RELOAD_ARGS+=("--classes-output-dirs" "$ABS_CLASSES_OUTPUT_DIRS")
+    fi
+    if [ -n "$ABS_WATCH_DIRS" ]; then
+        HOT_RELOAD_ARGS+=("--watch-dirs" "$ABS_WATCH_DIRS")
     fi
     if [ -n "$ABS_SOURCE_DIRS" ]; then
         HOT_RELOAD_ARGS+=("--source-dirs" "$ABS_SOURCE_DIRS")

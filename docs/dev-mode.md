@@ -190,14 +190,73 @@ directory is the tree the developer edits.
 
 ## Source Directory Flow
 
-1. `_collect_java_source_dirs()` in the Starlark rule finds `src/main/java` markers in dep source files
+1. `collect_source_dir_paths()` in the Starlark rule finds `src/main/java` markers in dep source files
 2. Source dirs are written to a runfiles file and passed via `--source-dirs`
 3. `DevModeLauncher` sets them as `sourcePaths` in `DevModeContext.ModuleInfo`
 4. `IsolatedDevModeMain` creates a `RuntimeUpdatesProcessor` that watches these directories
 
-When both source dirs and code-generation input dirs are empty, hot-reload is
-disabled but the Dev UI still works. Declared code-generation inputs keep the
-rebuild watcher active even when there are no Java source dirs.
+When source dirs, watch dirs, and code-generation input dirs are all empty,
+hot-reload is disabled but the Dev UI still works. Declared code-generation inputs
+keep the rebuild watcher active even when there are no Java source dirs.
+
+### Two source lists, because two things watch
+
+`--source-dirs` tells Quarkus what the module's sources are, and Quarkus compiles
+what it finds under them with its own `CompilationProvider`. Under Bazel that is
+a claim about ownership, not just a path list: a Scala root declared there makes
+Quarkus compile Scala off the dev classpath, beside the Bazel action that already
+owns that compile and against a classpath that is not the one the target was built
+with. So the list stays Java-only, which is the one language whose in-process
+compile agrees with what Bazel produced.
+
+`--watch-dirs` is the rules' own list, read only by `BazelFileWatcher`, and it
+covers every language in the graph (`_WATCH_MARKERS`, plus whatever `dev_watch_dirs`
+names). A change under one of them rebuilds the dev target, and Bazel decides what
+that means; Quarkus sees the result as changed classes in the mutable directory.
+This is why the watcher matches on extension — `.java`, `.scala`, `.kt` — rather
+than on the enclosing directory: a source root also holds resources and editor
+droppings, and rebuilding on those would queue a build for every unrelated save.
+
+### One resource root: the mutable directory
+
+The module's declared resource paths are deliberately empty, and its resources output
+path is the mutable classes directory.
+`RuntimeUpdatesProcessor.checkForFileChange` reads declared resource paths when it has
+them, copying changed files out of the source tree itself, and scans the classes
+directory only when it has none. Declaring the workspace's resource directories would
+therefore leave everything Bazel writes into the mutable directory unwatched, and an
+extension that watches by classpath location would never see a rebuild — the Web
+Bundler registers exactly such a watch over its web root, which is how a relinked
+browser module reaches the running application.
+
+The cost is that a resource edit is delivered by a rebuild rather than copied straight
+out of the source tree, so it takes as long as one. `BazelFileWatcher` therefore
+watches the declared resource directories too and rebuilds on a change below them.
+The exchange is the same one the rest of dev mode makes here: what runs is what Bazel
+built, rather than a source tree Quarkus copies from independently and which would
+diverge until some later rebuild happened to agree.
+
+### What the sync delivers
+
+`ClassSyncer` carries the whole application payload into the mutable classes
+directory, not only `.class` files. An application archive also holds the resources
+Quarkus and its extensions read from the classpath, and an extension can watch those
+by classpath location: the Web Bundler registers a
+`HotDeploymentWatchedFileBuildItem` over everything under its web root, so a rebuilt
+browser bundle reaches the running application through exactly the path a rebuilt
+class does. Only jar packaging metadata is dropped — a manifest or signature file
+describes nothing in a class tree assembled from several jars.
+
+Unchanged entries are not rewritten. The dev loop syncs thousands of files where a
+rebuild changed a handful, and Quarkus decides what to reload from what changed on
+disk; rewriting every file would make each reload look like a change to the whole
+application.
+
+An application that wants a different artifact in the dev loop than the one it
+packages selects on `@rules_quarkus//quarkus:dev_lifecycle`, which is true
+throughout the dev target's graph — a fast unoptimized link of a browser module in
+place of the whole-program one, for instance. The artifact still reaches the
+application as a classpath entry; only its contents differ.
 
 ### Generated sources
 

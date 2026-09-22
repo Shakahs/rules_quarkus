@@ -162,7 +162,10 @@ public final class DevModeLauncher {
       throws Exception {
     if (config.classesDir() == null
         || config.bazelTargets().isEmpty()
-        || (config.sourceDirs().isEmpty() && config.codegenInputDirs().isEmpty())) {
+        || (config.sourceDirs().isEmpty()
+            && config.watchDirs().isEmpty()
+            && config.resources().isEmpty()
+            && config.codegenInputDirs().isEmpty())) {
       return null;
     }
     LOGGER.debug("[hot-reload] Starting file watcher...");
@@ -341,6 +344,21 @@ public final class DevModeLauncher {
     // Key: classesPath points to mutable directory when available, otherwise the jar
     Path classesPath = config.classesDir() != null ? config.classesDir() : appJar;
 
+    // The mutable directory is the module's resource root as well as its class root, and
+    // deliberately its only one. `RuntimeUpdatesProcessor.checkForFileChange` reads declared
+    // resource paths when it has them and copies changed files out of them, and scans the
+    // classes directory only when it has none — so declaring the workspace's resource
+    // directories would leave everything Bazel writes into the mutable directory unwatched.
+    // An extension that watches by classpath location would then never see a rebuild: the
+    // Web Bundler registers such a watch over its whole web root, which is how a relinked
+    // browser module reaches the running application at all.
+    //
+    // The cost is that a resource edit is delivered by the rebuild rather than copied
+    // straight out of the source tree, so it takes as long as one. That is the same
+    // exchange the rest of dev mode makes here: what runs is what Bazel built, and a
+    // source tree Quarkus copies from independently would diverge from it until the next
+    // rebuild happened to agree.
+
     // targetDir must be a child of projectRoot so that WorkspaceProcessor (which does
     // targetDir.getParent() to find the project root) shows the correct source tree.
     // We create the directory in launch() since Bazel workspaces don't have a target/ dir.
@@ -353,9 +371,8 @@ public final class DevModeLauncher {
         .setProjectDirectory(projectRoot.toAbsolutePath().toString())
         .setSourcePaths(PathList.from(config.sourceDirs()))
         .setClassesPath(classesPath.toAbsolutePath().toString())
-        .setResourcePaths(PathList.from(config.resources()))
-        .setResourcesOutputPath(
-            config.resources().isEmpty() ? null : resourcesOutputPath.toAbsolutePath().toString())
+        .setResourcePaths(PathList.from(List.<Path>of()))
+        .setResourcesOutputPath(resourcesOutputPath.toAbsolutePath().toString())
         .setTargetDir(targetDir.toAbsolutePath().toString())
         .build();
   }
