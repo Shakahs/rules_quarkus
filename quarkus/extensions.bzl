@@ -120,7 +120,7 @@ def _resolved_coordinate_keys(artifact_key, artifact, dependency_coordinate_keys
     file_kind = shasums.keys()[0]
     return [artifact_key if file_kind == "jar" else artifact_key + ":jar:" + file_kind]
 
-def _runtime_catalog(lock_data):
+def _runtime_catalog(lock_data, target_overrides = {}):
     """Normalizes the graph selected by the authoritative Maven lock."""
     lock_version = str(lock_data.get("version", ""))
     if lock_version != "3":
@@ -151,10 +151,17 @@ def _runtime_catalog(lock_data):
                 "dependencies": [],
                 "exclusions": [],
                 "optional": False,
-                "targetName": _maven_target_name(coordinate_key),
+                "targetName": target_overrides.get(coordinate_key, _maven_target_name(coordinate_key)),
             }
 
     nodes = [nodes_by_key[key] for key in sorted(nodes_by_key)]
+
+    unknown_overrides = sorted([key for key in target_overrides if key not in nodes_by_key])
+    if unknown_overrides:
+        fail("Runtime target overrides are absent from the Maven lock: {}".format(unknown_overrides))
+    target_names = [node["targetName"] for node in nodes]
+    if len(target_names) != len({name: True for name in target_names}):
+        fail("Runtime target overrides must not assign duplicate Bazel target names")
 
     for node in nodes:
         direct_dependencies = dependencies.get(node["coordinateKey"], [])
@@ -1120,7 +1127,7 @@ def _validate_build_time_artifacts(declared, indexes, build_roots):
 def _materialize_locked_maven_graph(rctx):
     """Builds every generated catalog from the rules_jvm_external Maven lock."""
     lock_data = json.decode(rctx.read(rctx.attr.lock_file))
-    runtime_catalog = _runtime_catalog(lock_data)
+    runtime_catalog = _runtime_catalog(lock_data, rctx.attr.runtime_target_overrides)
     indexes = _catalog_indexes(runtime_catalog)
     descriptors = _scan_locked_descriptors(rctx, lock_data, indexes, runtime_catalog["directArtifacts"])
 
@@ -1271,6 +1278,9 @@ _rules_quarkus_repo = repository_rule(
         "lock_file": attr.label(doc = "rules_jvm_external v3 lock file used for the runtime catalog."),
         "platform_boms": attr.string_list(mandatory = True, doc = "Quarkus platform BOMs in G:A:V form."),
         "platform_properties": attr.string_dict(doc = "Explicit Quarkus platform property overrides."),
+        "runtime_target_overrides": attr.string_dict(
+            doc = "Maven coordinate keys mapped to target names when maven.override replaces a locked artifact.",
+        ),
         "quarkus_version": attr.string(mandatory = True, doc = "Quarkus version."),
     },
 )
@@ -1317,6 +1327,7 @@ def _quarkus_impl(mctx):
         "quarkus_version": version,
         "platform_boms": tc.platform_boms or ["io.quarkus.platform:quarkus-bom:" + version],
         "platform_properties": tc.platform_properties,
+        "runtime_target_overrides": tc.runtime_target_overrides,
     }
     repo_attrs["lock_file"] = tc.lock_file
     repo_attrs["build_time_artifacts"] = tc.build_time_artifacts
@@ -1343,6 +1354,9 @@ _toolchain_tag = tag_class(
         ),
         "platform_properties": attr.string_dict(
             doc = "Additional or overriding Quarkus platform properties. Custom platform release-info properties are supported.",
+        ),
+        "runtime_target_overrides": attr.string_dict(
+            doc = "Maven coordinate keys mapped to Bazel target names supplied by maven.override.",
         ),
         "quarkus_version": attr.string(
             mandatory = True,
