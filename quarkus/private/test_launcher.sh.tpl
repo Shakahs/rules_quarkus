@@ -23,10 +23,10 @@ TEST_KIND="%{test_kind}"
 ARTIFACT_TYPE="%{artifact_type}"
 ARTIFACT_PATH="${WORKSPACE_DIR}/%{artifact_path}"
 
-# Everything the launcher writes lives in the test's private TEST_TMPDIR. Bazel empties the test
-# temporary directory at the start of every `bazel test`, so what a killed test leaves behind (a
-# Bazel timeout, an interrupted run), which no trap gets to remove, is reclaimed by the next run
-# instead of accumulating in the host's /tmp.
+# Everything the launcher writes lives in the test's private TEST_TMPDIR. Bazel recreates that
+# directory before each run of the test, so what a killed test leaves behind (a Bazel timeout, an
+# interrupted run), which no trap gets to remove, is reclaimed by its next run instead of
+# accumulating in the host's /tmp.
 if [ -z "${TEST_TMPDIR:-}" ]; then
   echo "ERROR: TEST_TMPDIR is not set; Quarkus tests run through 'bazel test'" >&2
   exit 1
@@ -121,12 +121,13 @@ while IFS=, read -ra JAR_ENTRIES; do
 done < "$DIRECT_JARS_FILE"
 
 # Phase 1: Generate serialized ApplicationModel at test time.
-# The Web Bundler stages the application's bundle here, and Tailwind scans that staged directory for
-# the utility classes the page uses. Tailwind's scanner skips hidden paths, and Bazel's default test
-# temporary directory lives inside the output base, under a dot-directory: staged there, the
-# stylesheet comes out with every application class purged, a silently unstyled page rather than a
-# failed build. A workspace that bundles with Tailwind therefore points `--test_tmpdir` at a path
-# with no hidden component.
+# The Web Bundler stages the application's bundle here, under `project/target`, and Tailwind scans
+# that staged directory for the utility classes the page uses. Tailwind applies the ignore rules of
+# the git work tree the directory sits in, and Bazel's default test temporary directory is in the
+# execroot, which links the workspace's .git and .gitignore. A workspace that ignores `target/`
+# therefore gets a stylesheet with every application class purged: a silently unstyled page rather
+# than a failed build. A workspace that bundles with Tailwind points `--test_tmpdir` outside every
+# git work tree.
 #
 # Each augmentation extracts the web dependencies here, thousands of small files apiece. The trap
 # below reclaims them when the launcher exits; Bazel's cleaning of TEST_TMPDIR reclaims them when a
