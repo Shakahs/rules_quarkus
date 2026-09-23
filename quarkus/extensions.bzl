@@ -1230,7 +1230,14 @@ def _rules_quarkus_repo_impl(rctx):
       - quarkifier/tool.jar: the quarkifier deploy jar
       - deployment/: java_library targets for deployment jars
     """
-    _materialize_locked_maven_graph(rctx)
+    # A Quarkus patch upgrade changes the application's Maven inputs and the exact
+    # deployment coordinates together. `REPIN=1 bazel run @maven//:pin` must be able
+    # to produce that new lock before descriptor validation reads it; otherwise the
+    # extension rejects the old lock and makes the documented pin command impossible.
+    # Repository rules declare REPIN as an environment dependency below, so this
+    # bootstrap repository cannot be reused by an ordinary build after the pin.
+    if rctx.os.environ.get("REPIN") != "1":
+        _materialize_locked_maven_graph(rctx)
     _write_platform_catalog(rctx)
 
     rctx.file("BUILD.bazel", content = """\
@@ -1283,6 +1290,7 @@ _rules_quarkus_repo = repository_rule(
         ),
         "quarkus_version": attr.string(mandatory = True, doc = "Quarkus version."),
     },
+    environ = ["REPIN"],
 )
 
 # ---- Module extension ----
