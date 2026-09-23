@@ -23,6 +23,15 @@ TEST_KIND="%{test_kind}"
 ARTIFACT_TYPE="%{artifact_type}"
 ARTIFACT_PATH="${WORKSPACE_DIR}/%{artifact_path}"
 
+# Everything the launcher writes lives in the test's private TEST_TMPDIR. Bazel empties the test
+# temporary directory at the start of every `bazel test`, so what a killed test leaves behind (a
+# Bazel timeout, an interrupted run), which no trap gets to remove, is reclaimed by the next run
+# instead of accumulating in the host's /tmp.
+if [ -z "${TEST_TMPDIR:-}" ]; then
+  echo "ERROR: TEST_TMPDIR is not set; Quarkus tests run through 'bazel test'" >&2
+  exit 1
+fi
+
 # Validate packaged integration artifacts before TEST-mode model generation.
 if [ "$TEST_KIND" = "integration" ]; then
   if [ "$ARTIFACT_TYPE" = "native" ]; then
@@ -82,25 +91,25 @@ _realpath_entries() {
 # runfiles path and the exec-root path it links to are the same file and never
 # equal strings, so launching JUnit with the unresolved paths makes that check --
 # and the ArC removal exclusion for test classes built on it -- always false.
-APP_CP_FILE=$(mktemp)
+APP_CP_FILE=$(mktemp "$TEST_TMPDIR/app-classpath.XXXXXX")
 _prefix_entries ":" "${WORKSPACE_DIR}/%{classpath_file}" "$APP_CP_FILE"
-MODEL_APP_CP_FILE=$(mktemp)
+MODEL_APP_CP_FILE=$(mktemp "$TEST_TMPDIR/model-app-classpath.XXXXXX")
 _realpath_entries "$APP_CP_FILE" "$MODEL_APP_CP_FILE" || exit 1
 
 # Direct dep jars: comma-separated in source, prefix each entry. The file is
 # used for test discovery and to resolve local model artifacts at test time.
-DIRECT_JARS_FILE=$(mktemp)
+DIRECT_JARS_FILE=$(mktemp "$TEST_TMPDIR/direct-jars.XXXXXX")
 _prefix_entries "," "${WORKSPACE_DIR}/%{direct_jars_file}" "$DIRECT_JARS_FILE"
 
 # Coverage analysis includes every local runtime jar, including Quarkus
 # extension runtimes that must stay excluded from application roots.
 COVERAGE_JARS_FILE=""
 if [ "$COVERAGE_ENABLED" = "true" ]; then
-  COVERAGE_JARS_FILE=$(mktemp)
+  COVERAGE_JARS_FILE=$(mktemp "$TEST_TMPDIR/coverage-jars.XXXXXX")
   _prefix_entries "," "$COVERAGE_JARS_SOURCE" "$COVERAGE_JARS_FILE"
 fi
 
-LOCAL_APP_JARS_FILE=$(mktemp)
+LOCAL_APP_JARS_FILE=$(mktemp "$TEST_TMPDIR/local-app-jars.XXXXXX")
 while IFS=, read -ra JAR_ENTRIES; do
   first=true
   for jar_path in "${JAR_ENTRIES[@]}"; do
@@ -112,18 +121,17 @@ while IFS=, read -ra JAR_ENTRIES; do
 done < "$DIRECT_JARS_FILE"
 
 # Phase 1: Generate serialized ApplicationModel at test time.
-# Deliberately NOT under TEST_TMPDIR, unlike the reports and artifact-metadata directories below.
 # The Web Bundler stages the application's bundle here, and Tailwind scans that staged directory for
-# the utility classes the page uses. TEST_TMPDIR lives inside Bazel's output base, which is under a
-# dot-directory, and Tailwind's scanner skips hidden paths — so staging there yields a stylesheet
-# with every application class purged, and a silently unstyled page rather than a failed build.
+# the utility classes the page uses. Tailwind's scanner skips hidden paths, and Bazel's default test
+# temporary directory lives inside the output base, under a dot-directory: staged there, the
+# stylesheet comes out with every application class purged, a silently unstyled page rather than a
+# failed build. A workspace that bundles with Tailwind therefore points `--test_tmpdir` at a path
+# with no hidden component.
 #
-# The cost is that only the trap below reclaims this, and a trap does not run when the test JVM is
-# killed: a Bazel timeout, or an interrupted run. Each augmentation extracts the web dependencies
-# here, thousands of small files apiece, so killed tests accumulate until /tmp runs out of inodes
-# with most of its bytes still free. The name is the remedy: leaked directories are identifiable as
-# `quarkus-model.*` and can be removed without guessing at what else `mktemp -d` left behind.
-MODEL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarkus-model.XXXXXX")
+# Each augmentation extracts the web dependencies here, thousands of small files apiece. The trap
+# below reclaims them when the launcher exits; Bazel's cleaning of TEST_TMPDIR reclaims them when a
+# killed test never reached the trap.
+MODEL_DIR=$(mktemp -d "$TEST_TMPDIR/quarkus-model.XXXXXX")
 ARTIFACT_METADATA_DIR=""
 _cleanup_test_dirs() {
   rm -rf "$MODEL_DIR"
@@ -195,7 +203,7 @@ if ! echo "$TEST_ARGS" | grep -q '\-\-select-\|--scan-'; then
   done < "$DIRECT_JARS_FILE"
 fi
 
-REPORTS_DIR=$(mktemp -d "${TEST_TMPDIR:-/tmp}/junit-console-reports.XXXXXX")
+REPORTS_DIR=$(mktemp -d "$TEST_TMPDIR/junit-console-reports.XXXXXX")
 
 # ConsoleLauncher writes one JUnit XML document per test engine. Bazel expects
 # one XML_OUTPUT_FILE, so wrap those trusted documents in a testsuites root.
@@ -208,7 +216,7 @@ _write_bazel_test_xml() {
   local tmp_output="${output}.tmp.$$"
   local merge_failed=0
 
-  report_list=$(mktemp "${TEST_TMPDIR:-/tmp}/junit-report-list.XXXXXX")
+  report_list=$(mktemp "$TEST_TMPDIR/junit-report-list.XXXXXX")
   if ! find "$reports_dir" -maxdepth 1 -type f -name 'TEST-*.xml' -print |
       LC_ALL=C sort > "$report_list"; then
     rm -f "$report_list"
@@ -247,7 +255,7 @@ TEST_JVM_ARGS=(
   "-Djava.util.logging.manager=org.jboss.logmanager.LogManager"
 )
 if [ "$TEST_KIND" = "integration" ]; then
-  ARTIFACT_METADATA_DIR=$(mktemp -d "${TEST_TMPDIR:-/tmp}/quarkus-artifact.XXXXXX")
+  ARTIFACT_METADATA_DIR=$(mktemp -d "$TEST_TMPDIR/quarkus-artifact.XXXXXX")
   {
     printf 'type=%s\n' "$ARTIFACT_TYPE"
     printf 'path=%s\n' "$ARTIFACT_PATH"
@@ -264,7 +272,7 @@ if [ "$TEST_KIND" = "integration" ]; then
 fi
 COVERAGE_EXEC_FILE=""
 if [ "$COVERAGE_ENABLED" = "true" ]; then
-  COVERAGE_EXEC_FILE=$(mktemp "${TEST_TMPDIR:-/tmp}/quarkus-jacoco.XXXXXX")
+  COVERAGE_EXEC_FILE=$(mktemp "$TEST_TMPDIR/quarkus-jacoco.XXXXXX")
   TEST_JVM_ARGS+=(
     "-Djacoco-agent.output=file"
     "-Djacoco-agent.append=false"
@@ -291,7 +299,7 @@ fi
 # backslash and double-quote are escaped inside the quotes.
 _argfile_escape() { tr -d '\n' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
-JAVA_ARGS_FILE=$(mktemp)
+JAVA_ARGS_FILE=$(mktemp "$TEST_TMPDIR/java-args.XXXXXX")
 {
   printf '%s\n' "-cp"
   printf '"'
