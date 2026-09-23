@@ -3,7 +3,7 @@
 The Quarkifier (`com.clementguillot.quarkifier`) is a standalone Java tool that invokes the Quarkus internal build API (`io.quarkus.deployment`) to perform build-time augmentation. It is the core engine behind `rules_quarkus`.
 
 - **Main class**: `com.clementguillot.quarkifier.QuarkifierLauncher`
-- **Built against**: Quarkus 3.27.4 LTS, 3.33.2 LTS, and 3.39.4
+- **Built against**: Quarkus 3.27.4 LTS, 3.33.2 LTS, and 3.39.5
 
 ## CLI Interface
 

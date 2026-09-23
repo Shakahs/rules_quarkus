@@ -281,13 +281,13 @@ class DevModeLauncherTest {
    * own {@code pom.properties}.
    */
   private static Path deploymentJar(Path root, String artifactId) throws Exception {
-    Path jar = root.resolve("deployment/jars/" + artifactId + "-3.39.4.jar");
+    Path jar = root.resolve("deployment/jars/" + artifactId + "-3.39.5.jar");
     Files.createDirectories(jar.getParent());
     try (var out = new JarOutputStream(Files.newOutputStream(jar))) {
       out.putNextEntry(
           new ZipEntry("META-INF/maven/io.quarkus/" + artifactId + "/pom.properties"));
       out.write(
-          ("groupId=io.quarkus\nartifactId=" + artifactId + "\nversion=3.39.4\n")
+          ("groupId=io.quarkus\nartifactId=" + artifactId + "\nversion=3.39.5\n")
               .getBytes(StandardCharsets.UTF_8));
       out.closeEntry();
     }

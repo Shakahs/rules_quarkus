@@ -2,7 +2,7 @@
 set -euo pipefail
 
 model="${RUNFILES_DIR:?}/$1"
-coordinate="io.quarkus:quarkus-rest-kotlin::jar:3.39.4"
+coordinate="io.quarkus:quarkus-rest-kotlin::jar:3.39.5"
 activated_node="\"id\":\"conditional:${coordinate}\""
 
 if ! grep -Fq "${activated_node}" "${model}"; then

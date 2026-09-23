@@ -41,9 +41,9 @@ use_repo(maven, "maven")
 
 Run `bazel run @maven//:pin` to generate the `maven_install.json` lock file.
 
-> **Supported versions**: You must use exactly `3.27.4`, `3.33.2`, or `3.39.4`. These are the only supported patch versions.
+> **Supported versions**: You must use exactly `3.27.4`, `3.33.2`, or `3.39.5`. These are the only supported patch versions.
 >
-> **Known limitation**: a single Bazel workspace can configure only one `quarkus.toolchain()` today. You can choose `3.27.4`, `3.33.2`, or `3.39.4` per workspace, but you cannot build different Quarkus minor versions side by side in the same workspace yet.
+> **Known limitation**: a single Bazel workspace can configure only one `quarkus.toolchain()` today. You can choose `3.27.4`, `3.33.2`, or `3.39.5` per workspace, but you cannot build different Quarkus minor versions side by side in the same workspace yet.
 
 ## 3. Configure the Quarkus Toolchain
 
@@ -74,7 +74,7 @@ different `MODULE.bazel` configurations.
 
 | Attribute | Default | Description |
 |---|---|---|
-| `quarkus_version` | (required) | Quarkus version: `"3.27.4"`, `"3.33.2"`, or `"3.39.4"` |
+| `quarkus_version` | (required) | Quarkus version: `"3.27.4"`, `"3.33.2"`, or `"3.39.5"` |
 | `lock_file` | `None` | Path to `maven_install.json` for extension auto-discovery |
 | `extension_group_prefixes` | `["io.quarkus", "io.quarkiverse."]` | Deprecated compatibility option; descriptor discovery no longer filters by groupId |
 | `quarkifier_source_dir` | `None` | Label in the rules_quarkus source dir for local dev builds |
