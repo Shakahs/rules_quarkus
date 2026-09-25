@@ -940,8 +940,8 @@ def _host_maven_classifier(os, available):
     candidate = os_name + "-" + cpu
     return candidate if candidate in available else None
 
-def _locked_artifact_download(rctx, lock_data, node, output_root):
-    """Downloads one exact Maven-lock artifact through Bazel's verified downloader."""
+def _locked_artifact(rctx, lock_data, node, output_root):
+    """Where one exact Maven-lock artifact is downloaded from and to, and its checksum."""
     fields = node["coordinates"]
     coordinate_key = node["coordinateKey"]
     artifacts = lock_data["artifacts"]
@@ -972,13 +972,36 @@ def _locked_artifact_download(rctx, lock_data, node, output_root):
         fields["version"],
         filename,
     )
-    output = output_root + "/" + relative_path
-    rctx.download(
-        url = [repository.removesuffix("/") + "/" + relative_path for repository in rctx.attr.artifact_repositories],
-        output = output,
+    return struct(
+        output = output_root + "/" + relative_path,
         sha256 = shasums[sha_key],
+        url = [repository.removesuffix("/") + "/" + relative_path for repository in rctx.attr.artifact_repositories],
     )
-    return str(rctx.path(output))
+
+def _download_locked_artifacts(rctx, artifacts):
+    """Downloads Maven-lock artifacts through Bazel's verified downloader, in parallel.
+
+    Every download is started before any is awaited, so they proceed concurrently up to
+    Bazel's `--http_max_parallel_downloads`. Two nodes can name the same file, so each
+    output is downloaded once. Returns the absolute paths in the order of `artifacts`.
+    """
+    pending = {}
+    for artifact in artifacts:
+        if artifact.output not in pending:
+            pending[artifact.output] = rctx.download(
+                url = artifact.url,
+                output = artifact.output,
+                sha256 = artifact.sha256,
+                block = False,
+            )
+    for download in pending.values():
+        download.wait()
+    return [str(rctx.path(artifact.output)) for artifact in artifacts]
+
+# How many runtime jars the descriptor scan downloads at once. A batch is fetched in
+# parallel, then read and deleted before the next batch starts, which bounds the disk the
+# scan uses while keeping the downloader busy.
+_DESCRIPTOR_SCAN_BATCH = 64
 
 def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
     """Reads Quarkus descriptors from every Maven-locked runtime artifact the direct ones reach.
@@ -995,40 +1018,49 @@ def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
     The scan walks the lock graph's closure of the direct artifacts, so every jar Quarkus
     would open is opened here too. Each jar is discarded once its descriptor has been read:
     the closure is the whole runtime classpath, and keeping it extracted would cost gigabytes
-    for a few properties files.
+    for a few properties files. The jars are downloaded in parallel batches of
+    `_DESCRIPTOR_SCAN_BATCH`, and a batch is read and deleted before the next is fetched, so
+    no more than one batch of jars is on disk at a time.
     """
     descriptors = {}
-    candidates = sorted(_closure(direct_artifacts, indexes.by_key).keys())
-    for index in range(len(candidates)):
-        key = candidates[index]
-        node = indexes.by_key[key]
-        runtime_coordinate = _canonical_coordinate(node["coordinates"])
-        if node["coordinates"]["type"] not in ["jar", "bundle", "test-jar"]:
-            continue
-        artifact = _locked_artifact_download(rctx, lock_data, node, "descriptor-artifacts")
-        output = "descriptor-scan/{}".format(index)
-        rctx.extract(artifact, output)
-        descriptor_path = rctx.path(output + "/META-INF/quarkus-extension.properties")
-        props = _properties(rctx.read(descriptor_path)) if descriptor_path.exists else None
-        rctx.delete(output)
-        rctx.delete(artifact)
-        if props == None:
-            continue
-        deployment = props.get("deployment-artifact", "").strip()
-        if not deployment:
-            fail("Quarkus extension descriptor in {} has no deployment-artifact property".format(artifact))
-        runtime = _normalize_coordinate(runtime_coordinate)
-        descriptor = {
-            "conditionalDependencies": [_normalize_coordinate(value) for value in _words(props.get("conditional-dependencies", ""))],
-            "conditionalDevDependencies": [_normalize_coordinate(value) for value in _words(props.get("conditional-dev-dependencies", ""))],
-            "dependencyConditions": _words(props.get("dependency-condition", "")),
-            "deploymentArtifact": _normalize_coordinate(deployment),
-            "runtimeArtifact": runtime,
-        }
-        previous = descriptors.get(runtime)
-        if previous != None and previous != descriptor:
-            fail("Runtime artifact '{}' has conflicting extension descriptors".format(runtime))
-        descriptors[runtime] = descriptor
+    jars = [
+        indexes.by_key[key]
+        for key in sorted(_closure(direct_artifacts, indexes.by_key).keys())
+        if indexes.by_key[key]["coordinates"]["type"] in ["jar", "bundle", "test-jar"]
+    ]
+    for start in range(0, len(jars), _DESCRIPTOR_SCAN_BATCH):
+        batch = jars[start:start + _DESCRIPTOR_SCAN_BATCH]
+        paths = _download_locked_artifacts(rctx, [
+            _locked_artifact(rctx, lock_data, node, "descriptor-artifacts")
+            for node in batch
+        ])
+        for offset in range(len(batch)):
+            node = batch[offset]
+            artifact = paths[offset]
+            output = "descriptor-scan/{}".format(start + offset)
+            rctx.extract(artifact, output)
+            descriptor_path = rctx.path(output + "/META-INF/quarkus-extension.properties")
+            props = _properties(rctx.read(descriptor_path)) if descriptor_path.exists else None
+            rctx.delete(output)
+            if props == None:
+                continue
+            deployment = props.get("deployment-artifact", "").strip()
+            if not deployment:
+                fail("Quarkus extension descriptor in {} has no deployment-artifact property".format(artifact))
+            runtime = _normalize_coordinate(_canonical_coordinate(node["coordinates"]))
+            descriptor = {
+                "conditionalDependencies": [_normalize_coordinate(value) for value in _words(props.get("conditional-dependencies", ""))],
+                "conditionalDevDependencies": [_normalize_coordinate(value) for value in _words(props.get("conditional-dev-dependencies", ""))],
+                "dependencyConditions": _words(props.get("dependency-condition", "")),
+                "deploymentArtifact": _normalize_coordinate(deployment),
+                "runtimeArtifact": runtime,
+            }
+            previous = descriptors.get(runtime)
+            if previous != None and previous != descriptor:
+                fail("Runtime artifact '{}' has conflicting extension descriptors".format(runtime))
+            descriptors[runtime] = descriptor
+        for artifact in paths:
+            rctx.delete(artifact)
     return [descriptors[key] for key in sorted(descriptors)]
 
 def _catalog_indexes(catalog):
@@ -1153,13 +1185,17 @@ def _materialize_locked_maven_graph(rctx):
     _validate_build_time_artifacts(rctx.attr.build_time_artifacts, indexes, build_roots)
     runtime_catalog["directArtifacts"] = [key for key in runtime_catalog["directArtifacts"] if key not in build_roots]
 
-    files = {}
     selected_keys = dict(deployment_selected)
     selected_keys.update(conditional_selected)
-    for key in sorted(selected_keys):
-        node = indexes.by_key[key]
-        coordinate = _canonical_coordinate(node["coordinates"])
-        files[coordinate] = _locked_artifact_download(rctx, lock_data, node, "locked-artifacts")
+    selected_nodes = [indexes.by_key[key] for key in sorted(selected_keys)]
+    paths = _download_locked_artifacts(rctx, [
+        _locked_artifact(rctx, lock_data, node, "locked-artifacts")
+        for node in selected_nodes
+    ])
+    files = {
+        _canonical_coordinate(selected_nodes[index]["coordinates"]): paths[index]
+        for index in range(len(selected_nodes))
+    }
 
     deployment_jars = []
     deployment_artifacts = []
