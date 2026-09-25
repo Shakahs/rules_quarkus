@@ -671,6 +671,57 @@ class BazelApplicationModelAssemblerTest {
   }
 
   @Test
+  void testModeSkipsTheApplicationReachedThroughATestFixture() throws IOException {
+    var base = inputs(true, DEPLOYMENT);
+    String testRoot = "@@//:test_lib";
+    String fixture = "@@//:test_support";
+    Path testJar = jar("test-lib.jar", null);
+    Path fixtureJar = jar("test-support.jar", null);
+    var fragments = new java.util.ArrayList<>(base.targetFragments());
+    fragments.add(testLocal(testRoot, testJar, List.of(edge(APP), edge(fixture))));
+    fragments.add(testLocal(fixture, fixtureJar, List.of(edge(APP))));
+    var runtimePaths = new java.util.HashSet<>(base.runtimeClasspathPaths());
+    runtimePaths.add(testJar.toString());
+    runtimePaths.add(fixtureJar.toString());
+    var deploymentPaths = new java.util.HashSet<>(base.deploymentClasspathPaths());
+    deploymentPaths.add(testJar.toString());
+    deploymentPaths.add(fixtureJar.toString());
+    var testInputs =
+        new BazelApplicationModelAssembler.Inputs(
+            new Roots("@@//:test", List.of(testRoot)),
+            fragments,
+            base.runtimeCatalog(),
+            emptyConditionalCatalog(),
+            base.deploymentCatalog(),
+            base.platformCatalog(),
+            base.localDeployments(),
+            base.localRuntimeAliases(),
+            Map.of(),
+            base.deploymentPaths(),
+            base.platformPropertyPaths(),
+            runtimePaths,
+            deploymentPaths,
+            base.modelPrivateTargetIds(),
+            base.quarkusVersion(),
+            Mode.TEST,
+            "test",
+            "ignored-test-version",
+            base.producerVersion());
+
+    BazelApplicationModel model = BazelApplicationModelAssembler.assemble(testInputs);
+
+    assertEquals(APP, model.applicationId());
+    assertFalse(node(model, APP).classpath().reloadable());
+    assertTrue(node(model, fixture).classpath().reloadable());
+    assertTrue(
+        ExplicitApplicationModelBuilder.build(model).getDependencies().stream()
+            .filter(dependency -> dependency.getArtifactId().contains("test_support"))
+            .findFirst()
+            .orElseThrow()
+            .isReloadable());
+  }
+
+  @Test
   void parsesEveryQuarkusCompactCoordinateForm() {
     assertEquals(
         "g:a::jar:1", BazelArtifactCoordinates.canonical(BazelArtifactCoordinates.parse("g:a:1")));

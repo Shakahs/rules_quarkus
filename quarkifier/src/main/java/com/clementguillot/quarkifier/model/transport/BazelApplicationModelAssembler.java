@@ -522,6 +522,7 @@ public final class BazelApplicationModelAssembler {
         testRootId = selection.testRootId();
         applicationId = selection.applicationId();
         collapseTestRoot(testRootId, applicationId);
+        skipApplicationAmongDependencies(applicationId);
       } else {
         applicationId = inputs.roots().rootIds().get(0);
       }
@@ -676,6 +677,19 @@ public final class BazelApplicationModelAssembler {
       nodes.remove(testRootId);
       nodesByCoordinates.remove(BazelArtifactCoordinates.canonical(testRoot.coordinates));
       runtimeNodeIds.remove(testRootId);
+    }
+
+    /**
+     * Drops the edges that lead back to the application under test. Test fixtures that depend on
+     * the library under test find the application among their own dependencies; Quarkus skips the
+     * application root there instead of adding it as a dependency
+     * (GradleApplicationModelBuilder.processDeploymentDependency).
+     */
+    private void skipApplicationAmongDependencies(String applicationId) {
+      for (MutableNode node : nodes.values()) {
+        node.edges.values().removeIf(edge -> applicationId.equals(edge.targetId()));
+        node.declaredEdges.values().removeIf(edge -> applicationId.equals(edge.targetId()));
+      }
     }
 
     private void pruneUnreachableNodes(String applicationId) {
