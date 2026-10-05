@@ -101,6 +101,15 @@ _realpath_entries "$APP_CP_FILE" "$MODEL_APP_CP_FILE" || exit 1
 DIRECT_JARS_FILE=$(mktemp "$TEST_TMPDIR/direct-jars.XXXXXX")
 _prefix_entries "," "${WORKSPACE_DIR}/%{direct_jars_file}" "$DIRECT_JARS_FILE"
 
+# Where each artifact the model names is found. The model holds the exec-root paths of the
+# build that assembled it; this test has the artifacts in its runfiles tree, which on the
+# build machine links into that exec root and on a remote executor is all there is. Each
+# line pairs a model path with the artifact's runfiles path, made absolute here.
+ARTIFACT_PATHS_FILE=$(mktemp "$TEST_TMPDIR/artifact-paths.XXXXXX")
+CP_PREFIX="${WORKSPACE_DIR}/" awk \
+  'BEGIN{FS="\t"; OFS=FS; p=ENVIRON["CP_PREFIX"]} NF==2 {$2=p $2; print}' \
+  < "${WORKSPACE_DIR}/%{artifact_paths_file}" > "$ARTIFACT_PATHS_FILE"
+
 # Coverage analysis includes every local runtime jar, including Quarkus
 # extension runtimes that must stay excluded from application roots.
 COVERAGE_JARS_FILE=""
@@ -150,17 +159,18 @@ trap _cleanup_test_dirs EXIT
   --output-dir "$MODEL_DIR" \
   --mode test \
   --application-model "$MODEL_FILE" \
+  --artifact-paths-file "$ARTIFACT_PATHS_FILE" \
   --local-app-jars-file "$LOCAL_APP_JARS_FILE" \
   --app-name %{app_name})
 
 if [ $? -ne 0 ]; then
-  rm -f "$APP_CP_FILE" "$MODEL_APP_CP_FILE" "$LOCAL_APP_JARS_FILE" "$DIRECT_JARS_FILE" "$COVERAGE_JARS_FILE"
+  rm -f "$APP_CP_FILE" "$MODEL_APP_CP_FILE" "$LOCAL_APP_JARS_FILE" "$DIRECT_JARS_FILE" "$ARTIFACT_PATHS_FILE" "$COVERAGE_JARS_FILE"
   echo "ERROR: Quarkifier test model generation failed" >&2
   exit 1
 fi
 
 # Keep MODEL_APP_CP_FILE and DIRECT_JARS_FILE for phase 2; clean the rest.
-rm -f "$APP_CP_FILE" "$LOCAL_APP_JARS_FILE"
+rm -f "$APP_CP_FILE" "$LOCAL_APP_JARS_FILE" "$ARTIFACT_PATHS_FILE"
 
 if [ ! -f "$MODEL_DIR/test-app-model.dat" ]; then
   rm -f "$MODEL_APP_CP_FILE" "$DIRECT_JARS_FILE" "$COVERAGE_JARS_FILE"

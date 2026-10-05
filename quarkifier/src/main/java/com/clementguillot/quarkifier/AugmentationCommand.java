@@ -158,6 +158,13 @@ public final class AugmentationCommand implements Callable<Integer> {
   private List<Path> classesOutputDirs;
 
   @Option(
+      names = "--artifact-paths-file",
+      description =
+          "File of tab-separated <model path>\t<actual path> lines: where this invocation finds"
+              + " each artifact the application model names at a path of its own build.")
+  private Path artifactPathsFile;
+
+  @Option(
       names = "--workspace-dir",
       description = "Bazel workspace root directory for running bazel build.")
   private Path workspaceDir;
@@ -274,10 +281,36 @@ public final class AugmentationCommand implements Callable<Integer> {
             : Collections.unmodifiableMap(new LinkedHashMap<>(projectFiles)),
         resolvedLocalJars,
         resolvedBuildProperties,
-        applicationModel);
+        applicationModel,
+        resolveArtifactPaths(artifactPathsFile));
   }
 
   // ---- internal helpers ----
+
+  private Map<String, Path> resolveArtifactPaths(Path file) {
+    if (file == null) {
+      return Map.of();
+    }
+    List<String> lines;
+    try {
+      lines = Files.readAllLines(file);
+    } catch (IOException e) {
+      throw parameterException("Failed to read artifact paths file: " + file, e);
+    }
+    var paths = new LinkedHashMap<String, Path>();
+    for (String line : lines) {
+      if (line.isBlank()) {
+        continue;
+      }
+      int separator = line.indexOf('\t');
+      if (separator <= 0 || separator == line.length() - 1) {
+        throw parameterException(
+            "Artifact paths file " + file + " holds a line without two paths: " + line);
+      }
+      paths.put(line.substring(0, separator), Path.of(line.substring(separator + 1)));
+    }
+    return Collections.unmodifiableMap(paths);
+  }
 
   private List<Path> resolveClasspath(List<Path> inline, Path file) {
     if (file != null) {

@@ -161,6 +161,28 @@ def _canonical(entries, canonical):
             substituted.append(entry)
     return substituted
 
+def _write_artifact_paths_file(ctx, files):
+    """Writes each model artifact's exec path beside its runfiles path, tab-separated.
+
+    The model names its artifacts by exec path (model_assembly.bzl writes `File.path`),
+    while the test runs from its runfiles tree. On the machine that built it the tree
+    links into the exec root, so those paths resolve; on a remote executor the tree
+    holds the files themselves and nothing is at the exec paths. The launcher turns the
+    second column into absolute runfiles paths and the quarkifier reads each artifact
+    there (`--artifact-paths-file`).
+
+    Args:
+        ctx: Rule context.
+        files: Depset of every File the model may name.
+
+    Returns:
+        The declared output File.
+    """
+    output = ctx.actions.declare_file(ctx.label.name + "_artifact_paths.txt")
+    lines = [file.path + "\t" + file.short_path for file in files.to_list()]
+    ctx.actions.write(output = output, content = "\n".join(lines) + "\n")
+    return output
+
 def _test_impl(ctx, integration):
     if not ctx.attr.deps:
         rule_name = "quarkus_integration_test" if integration else "quarkus_test"
@@ -183,6 +205,11 @@ def _test_impl(ctx, integration):
     declared_build_properties = ctx.attr.build_properties if not integration else {}
     ext_rt_jars = collect_extension_runtime_jars(ctx.attr.deps)
     direct_jars_file = write_runfiles_paths_file(ctx, "_direct_jars.txt", _canonical(collect_local_app_jars(ctx.attr.deps, runtime_classpath, ext_rt_jars), canonical), ",")
+    model_artifacts = depset(
+        direct = ctx.files.deployment_artifacts + canonical.files,
+        transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deploy_classpath],
+    )
+    artifact_paths_file = _write_artifact_paths_file(ctx, model_artifacts)
 
     tool_jar = ctx.file.quarkifier_tool
     java_runtime = ctx.attr._java_runtime[java_common.JavaRuntimeInfo]
@@ -208,6 +235,7 @@ def _test_impl(ctx, integration):
         output = launcher,
         substitutions = {
             "%{app_name}": ctx.label.name,
+            "%{artifact_paths_file}": artifact_paths_file.short_path,
             "%{artifact_path}": integration_artifact.artifact_path if integration else "",
             "%{artifact_type}": integration_artifact.artifact_type if integration else "",
             "%{build_property_jvm_flags}": " ".join(_build_property_jvm_flags(declared_build_properties)),
@@ -229,16 +257,14 @@ def _test_impl(ctx, integration):
         is_executable = True,
     )
 
-    direct_runfiles = [cp_file, direct_jars_file, model, tool_jar] + coverage_files + canonical.files
+    direct_runfiles = [cp_file, direct_jars_file, artifact_paths_file, model, tool_jar] + coverage_files
     if coverage_jars_file:
         direct_runfiles.append(coverage_jars_file)
     if integration:
         direct_runfiles.append(integration_artifact.artifact)
     runfiles = ctx.runfiles(
-        files = direct_runfiles + ctx.files.deployment_artifacts,
-        transitive_files = depset(
-            transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deploy_classpath, java_runtime.files],
-        ),
+        files = direct_runfiles,
+        transitive_files = depset(transitive = [model_artifacts, java_runtime.files]),
     )
     if coverage_runfiles:
         runfiles = runfiles.merge(coverage_runfiles)

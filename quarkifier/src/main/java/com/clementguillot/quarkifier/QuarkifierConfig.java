@@ -20,8 +20,8 @@ import java.util.Map;
  * @param nativeBuilderImage the native builder image for {@code
  *     platform.quarkus.native.builder-image} (may be {@code null})
  * @param sourceDirs source directories declared to Quarkus as the module's sources
- * @param watchDirs directories the hot-reload watcher observes — the source roots of every
- *     language Bazel compiles, which Quarkus is not told about because Bazel owns those compiles
+ * @param watchDirs directories the hot-reload watcher observes — the source roots of every language
+ *     Bazel compiles, which Quarkus is not told about because Bazel owns those compiles
  * @param classesDir mutable directory for .class files in dev mode (may be {@code null})
  * @param bazelTargets Bazel targets to rebuild on source changes
  * @param classesOutputDirs bazel-bin output directories containing .class files
@@ -35,6 +35,8 @@ import java.util.Map;
  * @param localAppJars local workspace jars to use as application roots
  * @param buildProperties declared hermetic build-time configuration
  * @param applicationModel explicit validated Bazel model JSON
+ * @param artifactPaths each artifact path the model holds to the file holding that artifact where
+ *     this invocation runs; an artifact absent from the map is read at the model's path
  */
 public record QuarkifierConfig(
     List<Path> applicationClasspath,
@@ -59,4 +61,5 @@ public record QuarkifierConfig(
     Map<Path, Path> projectFiles,
     List<Path> localAppJars,
     Map<String, String> buildProperties,
-    Path applicationModel) {}
+    Path applicationModel,
+    Map<String, Path> artifactPaths) {}

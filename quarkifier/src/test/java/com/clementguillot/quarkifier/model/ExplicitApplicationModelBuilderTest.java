@@ -59,6 +59,45 @@ class ExplicitApplicationModelBuilderTest {
   }
 
   @Test
+  void testModelReadsArtifactsWhereTheInvocationFindsThem(@TempDir Path tempDir) throws Exception {
+    // The model names the jar by the exec-root path of the build that assembled it; nothing
+    // is there. The invocation (a test on a remote executor) has it in its runfiles tree.
+    String modelPath = "bazel-out/k8-fastbuild/bin/external/repository/dependency.jar";
+    Path runfiles = Files.createDirectories(tempDir.resolve("test.runfiles/repository"));
+    Path backingJar = runfiles.resolve("dependency.jar");
+    try (var ignored = new JarOutputStream(Files.newOutputStream(backingJar))) {
+      // Empty but valid JAR.
+    }
+
+    var application =
+        new BazelApplicationModel.Node(
+            "app",
+            BazelApplicationModel.NodeKind.APPLICATION,
+            new BazelApplicationModel.ArtifactCoordinates("test", "app", "", "jar", "1.0"),
+            List.of(modelPath),
+            List.of(),
+            new BazelApplicationModel.ClasspathFacts(
+                false, true, false, false, false, false, false),
+            null,
+            "//:app");
+    var model =
+        new BazelApplicationModel(
+            BazelApplicationModel.SCHEMA_VERSION,
+            new BazelApplicationModel.Producer("test", "1"),
+            com.clementguillot.quarkifier.QuarkifierVersionProvider.targetedQuarkusVersion(),
+            BazelApplicationModel.Mode.TEST,
+            application.id(),
+            List.of(application),
+            List.of(),
+            new BazelApplicationModel.Platform(List.of(), Map.of(), List.of()));
+
+    var built = ExplicitApplicationModelBuilder.build(model, Map.of(modelPath, backingJar));
+
+    assertEquals(
+        backingJar.toRealPath(), built.getAppArtifact().getResolvedPaths().getSinglePath());
+  }
+
+  @Test
   void workspaceSourceMetadataSurvivesNativeModelSerialization(@TempDir Path tempDir)
       throws Exception {
     Path appJar = tempDir.resolve("app.jar");

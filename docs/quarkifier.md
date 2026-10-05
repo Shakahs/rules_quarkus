@@ -42,6 +42,7 @@ java -jar quarkifier_<minor>_deploy.jar \
   [--local-app-jars-file <path>] \
   [--build-properties-file <path>] \
   --application-model <quarkus-bazel-model-v1.json> \
+  [--artifact-paths-file <path>] \
   [-h|--help] \
   [-V|--version]
 ```
@@ -73,6 +74,7 @@ java -jar quarkifier_<minor>_deploy.jar \
 | `--local-app-jars-file` | No | — | File containing local app jars (alternative to `--local-app-jars`) |
 | `--build-properties-file` | No | — | UTF-8 `.properties` file containing declared build-system configuration; names must be non-empty and cannot contain `=`; accepted by normal, dev, and native augmentation and rejected in TEST mode, where augmentation occurs in the test JVM |
 | `--application-model` | Yes | — | Strict `quarkus-bazel-model-v1` input; its mode and Quarkus version must match the invocation and version-specific tool |
+| `--artifact-paths-file` | No | — | File of tab-separated `<model path>\t<actual path>` lines: where this invocation finds each artifact the model names by an exec-root path of its own build. The test launcher writes one from the runfiles tree, so a test runs where that tree is all there is (a remote executor); an artifact absent from the file is read at the model's path |
 | `-h`, `--help` | — | — | Show help message and exit |
 | `-V`, `--version` | — | — | Show version info and exit |
 

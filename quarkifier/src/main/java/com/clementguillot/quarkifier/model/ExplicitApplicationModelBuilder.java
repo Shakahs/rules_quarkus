@@ -50,13 +50,25 @@ public final class ExplicitApplicationModelBuilder {
   private ExplicitApplicationModelBuilder() {}
 
   public static ApplicationModel build(BazelApplicationModel model) throws IOException {
+    return build(model, Map.of());
+  }
+
+  /**
+   * Builds the model with its artifacts read from where this invocation finds them.
+   *
+   * @param artifactPaths each model artifact path to the file holding it here; an artifact absent
+   *     from the map is read at the path the model holds
+   */
+  public static ApplicationModel build(BazelApplicationModel model, Map<String, Path> artifactPaths)
+      throws IOException {
     BazelApplicationModelValidator.validate(model);
-    var adapter = new Adapter(model);
+    var adapter = new Adapter(model, artifactPaths);
     return adapter.build();
   }
 
   private static final class Adapter {
     private final BazelApplicationModel source;
+    private final Map<String, Path> artifactPaths;
     private final ApplicationModelBuilder builder = new ApplicationModelBuilder();
     private final Map<String, Node> nodes = new LinkedHashMap<>();
     private final Map<String, ResolvedDependencyBuilder> dependencies = new LinkedHashMap<>();
@@ -67,8 +79,9 @@ public final class ExplicitApplicationModelBuilder {
     private final Set<String> runtimeExtensions = new java.util.HashSet<>();
     private final Map<String, Properties> extensionDescriptors = new HashMap<>();
 
-    private Adapter(BazelApplicationModel source) {
+    private Adapter(BazelApplicationModel source, Map<String, Path> artifactPaths) {
       this.source = source;
+      this.artifactPaths = Map.copyOf(artifactPaths);
       for (Node node : source.nodes()) {
         nodes.put(node.id(), node);
       }
@@ -189,11 +202,17 @@ public final class ExplicitApplicationModelBuilder {
      * model then makes shutdown/reload fail with {@link java.nio.file.NoSuchFileException}.
      * Workspace and source paths intentionally do not use this policy: they are logical project
      * locations and some output directories do not exist when the model is assembled.
+     *
+     * <p>The model holds each artifact's path in the execution root of the build that assembled it.
+     * A test runs from its runfiles tree, which on the build machine links into that execution root
+     * and on a remote executor holds the files themselves, with nothing at the execution-root
+     * paths. The launcher therefore says where each artifact is found, and the artifact is read
+     * there.
      */
     private List<Path> resolveArtifactPaths(Node node) throws IOException {
       var resolved = new ArrayList<Path>(node.paths().size());
       for (String rawPath : node.paths()) {
-        Path path = Path.of(rawPath);
+        Path path = artifactPath(rawPath);
         if (source.mode() == BazelApplicationModel.Mode.DEV
             || source.mode() == BazelApplicationModel.Mode.TEST) {
           try {
@@ -210,6 +229,12 @@ public final class ExplicitApplicationModelBuilder {
         resolved.add(path);
       }
       return resolved;
+    }
+
+    /** Where the artifact the model names by {@code rawPath} is found by this invocation. */
+    private Path artifactPath(String rawPath) {
+      Path found = artifactPaths.get(rawPath);
+      return found == null ? Path.of(rawPath) : found;
     }
 
     private static void applyClasspathFacts(Node node, ResolvedDependencyBuilder dependency) {
@@ -345,7 +370,21 @@ public final class ExplicitApplicationModelBuilder {
       return paths.isEmpty() ? null : workspacePath(paths.get(0));
     }
 
+    /**
+     * A workspace module's path: a logical project location, kept as the model holds it, made
+     * absolute in dev and test. A path the invocation locates (an output directory it has in its
+     * runfiles) is the file found there, resolved as the classpath is: Quarkus compares a test
+     * class's classpath root with its module's output directory by path equality.
+     */
     private Path workspacePath(String rawPath) {
+      Path found = artifactPaths.get(rawPath);
+      if (found != null) {
+        try {
+          return found.toAbsolutePath().normalize().toRealPath();
+        } catch (IOException e) {
+          return found.toAbsolutePath().normalize();
+        }
+      }
       Path path = Path.of(rawPath);
       return source.mode() == BazelApplicationModel.Mode.DEV
               || source.mode() == BazelApplicationModel.Mode.TEST
@@ -540,12 +579,12 @@ public final class ExplicitApplicationModelBuilder {
       }
     }
 
-    private static Optional<Properties> descriptor(Node node) throws IOException {
+    private Optional<Properties> descriptor(Node node) throws IOException {
       for (String rawPath : node.paths()) {
         if (!rawPath.endsWith(".jar")) {
           continue;
         }
-        Optional<Properties> result = ExtensionDescriptorReader.readFromJar(Path.of(rawPath));
+        Optional<Properties> result = ExtensionDescriptorReader.readFromJar(artifactPath(rawPath));
         if (result.isPresent()) {
           return result;
         }

@@ -102,10 +102,10 @@ public final class AugmentationExecutor {
   private static void publishJvmPackage(
       Path stagingTarget, Path outputDir, JarPackageType packageType) throws java.io.IOException {
     switch (packageType) {
-      case FAST_JAR, MUTABLE_JAR, AOT_JAR ->
-          copyTree(stagingTarget.resolve("quarkus-app"), outputDir.resolve("quarkus-app"));
-      case UBER_JAR ->
-          copyFile(stagingTarget.resolve("quarkus-run.jar"), outputDir.resolve("quarkus-run.jar"));
+      case FAST_JAR, MUTABLE_JAR, AOT_JAR -> copyTree(
+          stagingTarget.resolve("quarkus-app"), outputDir.resolve("quarkus-app"));
+      case UBER_JAR -> copyFile(
+          stagingTarget.resolve("quarkus-run.jar"), outputDir.resolve("quarkus-run.jar"));
       case LEGACY_JAR -> {
         copyFile(stagingTarget.resolve("quarkus-run.jar"), outputDir.resolve("quarkus-run.jar"));
         Path legacyLib = stagingTarget.resolve("lib");
@@ -151,7 +151,7 @@ public final class AugmentationExecutor {
     var explicitModel = BazelApplicationModelReader.read(config.applicationModel());
     validateModelCompatibility(config.mode(), explicitModel);
     config.packageType().validateCompatibility(config.mode());
-    return ExplicitApplicationModelBuilder.build(explicitModel);
+    return ExplicitApplicationModelBuilder.build(explicitModel, config.artifactPaths());
   }
 
   static void validateModelCompatibility(AugmentationMode mode, BazelApplicationModel explicitModel)
@@ -191,8 +191,7 @@ public final class AugmentationExecutor {
 
   /** Runs the Quarkus bootstrap and augmentation for production/native modes. */
   private static void runAugmentation(
-      QuarkifierConfig config, ApplicationModel appModel, Path outputDir)
-      throws Exception {
+      QuarkifierConfig config, ApplicationModel appModel, Path outputDir) throws Exception {
 
     Properties buildProps =
         config.mode() == AugmentationMode.NATIVE
