@@ -71,9 +71,8 @@ public final class DevModeLauncher {
       // In a Bazel workspace this directory doesn't exist by default (unlike Maven's target/).
       Files.createDirectories(Path.of(context.getApplicationRoot().getTargetDir()));
 
-      // AppModelSerializerImpl is version-specific:
-      // - 3.27: Java Object Serialization (BootstrapUtils)
-      // - 3.33+: JSON format (ApplicationModelSerializer)
+      // AppModelSerializerImpl is version-specific; each supported minor writes the format its
+      // ApplicationModelSerializer reads back in the dev JVM.
       AppModelSerializerStrategy serializer = new AppModelSerializerImpl();
       Path serializedModel = serializer.serialize(appModel);
 
@@ -172,7 +171,7 @@ public final class DevModeLauncher {
     // Required for jboss-threads on Java 24+
     cmd.add("--add-opens");
     cmd.add("java.base/java.lang=ALL-UNNAMED");
-    // Required for Quarkus 3.33+
+    // Quarkus's own dev-mode command line opens this package as well.
     cmd.add("--add-opens");
     cmd.add("java.base/java.lang.invoke=ALL-UNNAMED");
     classChangeAgent(config).ifPresent(agent -> cmd.add("-javaagent:" + agent.toAbsolutePath()));

@@ -35,7 +35,7 @@ class ApplicationModelSnapshotProcessor {
   }
 
   /**
-   * Gradle round-trips the model before augmentation. Quarkus 3.33.2 deserializes an empty
+   * Gradle round-trips the model before augmentation. Quarkus 3.40.1 deserializes an empty
    * extension dev-mode JVM option set as {@code null}, while its JSON serializer assumes the value
    * is non-null. Restoring the semantically equivalent empty value keeps this oracle observational.
    */
@@ -50,7 +50,7 @@ class ApplicationModelSnapshotProcessor {
         field.set(config, JvmOptions.builder().build());
       } catch (ReflectiveOperationException e) {
         throw new IllegalStateException(
-            "Cannot normalize Quarkus 3.33.2's null Gradle extension dev-mode options", e);
+            "Cannot normalize Quarkus 3.40.1's null Gradle extension dev-mode options", e);
       }
     }
   }

@@ -36,7 +36,7 @@ register_toolchains("@graalvm//:jvm", "@graalvm//:sdk")
 ```
 
 > **GraalVM version**: Use a version compatible with your Quarkus version.
-> Quarkus 3.33 targets GraalVM 25. If `rules_graalvm` doesn't ship your
+> Quarkus 3.39 and 3.40 target GraalVM 25. If `rules_graalvm` doesn't ship your
 > required version, use `git_override` to point to a fork that does.
 
 ### 2. Add native=True to your quarkus_app
@@ -138,9 +138,8 @@ The CC toolchain is resolved hermetically — no `use_default_shell_env` or syst
 
 | Quarkus Version | Required GraalVM | Notes |
 |-----------------|-----------------|-------|
-| 3.27.4 LTS | GraalVM 21+ | Works with `rules_graalvm` 0.11.1 stock |
-| 3.33.2 LTS | GraalVM 25+ | Requires a fork of `rules_graalvm` with GraalVM 25 support |
-| 3.39.5 | GraalVM 25 | Same `rules_graalvm` fork as 3.33; verified with GraalVM CE 25.0.1 |
+| 3.39.5 | GraalVM 25 | Requires a fork of `rules_graalvm` with GraalVM 25 support; verified with GraalVM CE 25.0.1 |
+| 3.40.1 | GraalVM 25 | Same `rules_graalvm` fork as 3.39 |
 
 ### Using a fork for GraalVM 25
 

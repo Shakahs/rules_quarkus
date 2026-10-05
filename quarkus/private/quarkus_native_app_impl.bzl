@@ -20,10 +20,9 @@ load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
 _GVM_TOOLCHAIN_TYPE = "@rules_graalvm//graalvm/toolchain"
 
 # We cd into native-sources/ so that relative paths in the args file resolve
-# correctly. The args file ends with "<output-name> -jar <runner>.jar" up to
-# Quarkus 3.33 and with "-o <output-name> -jar <runner>.jar" in 3.39: either
-# output-name form is removed and replaced by -o with the absolute output
-# path. Monitoring options that may be incompatible with the installed
+# correctly. The args file ends with "-o <output-name> -jar <runner>.jar"; that
+# output name is removed and replaced by -o with the absolute output path.
+# Monitoring options that may be incompatible with the installed
 # GraalVM version are stripped. The rewritten args are passed via @argfile
 # so the -cp line (one entry per dependency jar) never lands on argv (E2BIG).
 #
@@ -51,7 +50,7 @@ if [ -n "$LD_PATH" ]; then
 fi
 cd "{native_sources}"
 REWRITTEN_ARGS=$(mktemp)
-sed -e 's| -o {runner_name} -jar | -jar |' -e 's| {runner_name} -jar | -jar |' -e 's|--enable-monitoring=[^ ]*||g' native-image.args > "$REWRITTEN_ARGS"
+sed -e 's| -o {runner_name} -jar | -jar |' -e 's|--enable-monitoring=[^ ]*||g' native-image.args > "$REWRITTEN_ARGS"
 exec "$NATIVE_IMAGE" "@$REWRITTEN_ARGS" -H:CCompilerPath="$CC_PATH" -o "$OUTPUT"
 """
 

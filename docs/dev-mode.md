@@ -159,8 +159,7 @@ Key categories: bootstrap (`quarkus-bootstrap-core`, `quarkus-bootstrap-maven-re
 ### ApplicationModel Serialization Format
 
 Quarkus 3.31+ changed `ApplicationModelSerializer` to use JSON format by default instead of Java Object Serialization. The `DevModeLauncher` uses a version-specific `AppModelSerializerStrategy`:
-- **3.27.4**: `BootstrapUtils.serializeAppModel()` (Java Object Serialization)
-- **3.33.2** and **3.39.5**: `ApplicationModelSerializer.serialize()` (JSON)
+- **3.39.5** and **3.40.1**: `ApplicationModelSerializer.serialize()` (JSON)
 
 ### Explicit metadata
 

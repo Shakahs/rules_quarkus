@@ -14,7 +14,7 @@ load("//quarkus/private:versions.bzl", "MAVEN_CENTRAL", "SUPPORTED_VERSIONS")
 # ---- Version helpers ----
 
 def _extract_minor_version(version):
-    """Extracts the minor version (e.g. "3.27") from a full version string."""
+    """Extracts the minor version (e.g. "3.40") from a full version string."""
     parts = version.split(".")
     if len(parts) < 2:
         fail("Invalid Quarkus version '{}': expected MAJOR.MINOR.PATCH format".format(version))
@@ -27,7 +27,7 @@ def _validate_version(version):
     version must match the supported patch for its minor exactly.
 
     Returns:
-        The minor version string (e.g. "3.27").
+        The minor version string (e.g. "3.40").
     """
     minor = _extract_minor_version(version)
     supported_list = ", ".join([SUPPORTED_VERSIONS[m] for m in sorted(SUPPORTED_VERSIONS)])
@@ -628,7 +628,6 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_project_files = {{}},
         native_container_runtime: Container runtime: 'auto' (default), 'docker', or 'podman'.
         native_builder_image: Builder image for container native compilation.
         package_type: JVM output: fast-jar, uber-jar, mutable-jar, legacy-jar, or aot-jar.
-            aot-jar requires Quarkus 3.33 or newer.
         build_properties: Declared build-time properties shared by the JVM, dev, and native targets.
         **kwargs: Passed to the underlying quarkus_app_rule (deps, version, jvm_flags, etc.).
     \"\"\"

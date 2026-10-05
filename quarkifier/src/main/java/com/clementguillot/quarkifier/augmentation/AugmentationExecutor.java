@@ -150,7 +150,7 @@ public final class AugmentationExecutor {
     }
     var explicitModel = BazelApplicationModelReader.read(config.applicationModel());
     validateModelCompatibility(config.mode(), explicitModel);
-    config.packageType().validateCompatibility(config.mode(), explicitModel.quarkusVersion());
+    config.packageType().validateCompatibility(config.mode());
     return ExplicitApplicationModelBuilder.build(explicitModel);
   }
 

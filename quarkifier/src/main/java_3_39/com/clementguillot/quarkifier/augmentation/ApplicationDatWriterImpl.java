@@ -6,11 +6,7 @@ import java.io.OutputStream;
 import java.nio.file.Path;
 import java.util.List;
 
-/**
- * Quarkus 3.39 implementation calling the 5-arg {@code SerializedApplication.write()} signature.
- *
- * <p>Since 3.33, the deprecated {@code nonExistentSourcePaths} parameter was removed.
- */
+/** Quarkus 3.39 implementation calling the 5-arg {@code SerializedApplication.write()} signature. */
 public final class ApplicationDatWriterImpl implements ApplicationDatWriter {
 
   @Override

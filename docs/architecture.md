@@ -3,8 +3,8 @@
 `rules_quarkus` provides Bazel-native rules for building and running Quarkus JVM applications. Instead of wrapping Maven/Gradle plugins, it invokes the Quarkus internal build API (`io.quarkus.deployment`) directly through a custom Java tool called the **Quarkifier**. This gives Bazel full control over caching, sandboxing, and dependency tracking.
 
 - **Module**: `com_clementguillot_rules_quarkus`
-- **Quarkus versions**: 3.27.4 LTS, 3.33.2 LTS, 3.39.5
-- **Version scope**: one configured Quarkus version per Bazel workspace (`3.27.4`, `3.33.2`, or `3.39.5`)
+- **Quarkus versions**: 3.39.5, 3.40.1
+- **Version scope**: one configured Quarkus version per Bazel workspace (`3.39.5` or `3.40.1`)
 - **Java**: 17+
 - **Bazel**: 7+, 8+, or 9+ (bzlmod only, WORKSPACE not supported)
 
@@ -70,7 +70,7 @@ graph TD
 
 The `quarkus` module extension (`quarkus/extensions.bzl`) creates a single unified repository:
 
-Current limitation: the extension consumes the first `quarkus.toolchain()` tag and creates a fixed repository name (`@rules_quarkus`). This means version selection is workspace-wide. You can choose `3.27.4`, `3.33.2`, or `3.39.5` per workspace, but one workspace cannot currently build different Quarkus versions side by side.
+Current limitation: the extension consumes the first `quarkus.toolchain()` tag and creates a fixed repository name (`@rules_quarkus`). This means version selection is workspace-wide. You can choose `3.39.5` or `3.40.1` per workspace, but one workspace cannot currently build different Quarkus versions side by side.
 
 ### @rules_quarkus
 
@@ -210,13 +210,11 @@ rules_quarkus/
 │   ├── BUILD.bazel                 # java_library, java_binary, java_test targets
 │   └── src/
 │       ├── main/java/...           # Quarkifier tool source (shared across versions)
-│       ├── main/java_3_27/...      # Version-specific source for Quarkus 3.27
-│       ├── main/java_3_33/...      # Version-specific source for Quarkus 3.33
 │       ├── main/java_3_39/...      # Version-specific source for Quarkus 3.39
+│       ├── main/java_3_40/...      # Version-specific source for Quarkus 3.40
 │       └── test/java/...           # Unit + property-based tests
 ├── examples/
-│   ├── helloworld_3_27/            # Example project using Quarkus 3.27
-│   ├── helloworld_3_33/            # Example project using Quarkus 3.33
-│   └── helloworld_3_39/            # Example project using Quarkus 3.39
+│   ├── helloworld_3_39/            # Example project using Quarkus 3.39
+│   └── helloworld_3_40/            # Example project using Quarkus 3.40
 └── e2e/smoke/                      # E2E smoke tests (bzlmod, Bazel 7/8/9)
 ```

@@ -4,9 +4,8 @@
 # The quarkifier is compiled against each minor version's APIs independently.
 # Users MUST use one of these exact versions.
 SUPPORTED_VERSIONS = {
-    "3.27": "3.27.4",
-    "3.33": "3.33.2",
     "3.39": "3.39.5",
+    "3.40": "3.40.1",
 }
 
 # Version of rules_quarkus itself — must match the version in MODULE.bazel.
@@ -20,7 +19,7 @@ GITHUB_OWNER = "clementguillot"
 GITHUB_REPO = "rules_quarkus"
 
 # SHA-256 checksums of the per-minor quarkifier release jars, keyed by minor
-# version (e.g. "3.33").
+# version (e.g. "3.40").
 #
 # Intentionally EMPTY in the git tree: the jar hashes only exist once the
 # release workflow has built the jars. release_prep.sh builds them, computes
