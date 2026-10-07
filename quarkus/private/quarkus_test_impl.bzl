@@ -268,6 +268,10 @@ def _test_impl(ctx, integration):
     )
     if coverage_runfiles:
         runfiles = runfiles.merge(coverage_runfiles)
+    runfiles = runfiles.merge_all([
+        ctx.runfiles(transitive_files = data[DefaultInfo].files).merge(data[DefaultInfo].default_runfiles)
+        for data in ctx.attr.data
+    ])
 
     return [
         DefaultInfo(executable = launcher, runfiles = runfiles),
@@ -288,6 +292,10 @@ def _test_attrs(integration = False):
     dependency_cfg = disable_coverage_transition if integration else "target"
     attrs = {
         "conditional_catalog": attr.label(allow_single_file = [".json"], mandatory = True),
+        "data": attr.label_list(
+            allow_files = True,
+            doc = "Files and executables the test needs at runtime, in its runfiles tree as any test rule's `data`.",
+        ),
         "conditional_deps": attr.label(
             mandatory = True,
             providers = [JavaInfo],
