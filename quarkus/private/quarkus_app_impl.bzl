@@ -5,6 +5,7 @@ from java_library deps, invoking the Quarkifier tool to produce a Fast_Jar
 output, and generating a launcher script for `bazel run`.
 """
 
+load("//quarkus/private:coverage_transition.bzl", "production_compilation_transition")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusAppInfo")
@@ -103,6 +104,7 @@ def _quarkus_app_impl(ctx):
     ]
 
 quarkus_app_rule = rule(
+    cfg = production_compilation_transition,
     implementation = _quarkus_app_impl,
     executable = True,
     attrs = {

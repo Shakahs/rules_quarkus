@@ -1,0 +1,28 @@
+# Bazel frontend assets
+
+`quarkus_web_bundle` in `quarkus/web/defs.bzl` runs the frontend build as ordinary,
+cacheable Bazel actions. It uses Aspect rules_js for npm inputs and the Tailwind
+CLI, and rules_esbuild for the hermetic esbuild toolchain. Quarkus augmentation
+never installs frontend dependencies or bundles JavaScript.
+
+Declare the bundle in the npm workspace package containing the linked
+`node_modules` tree. Supply the frontend source directory, linked browser module,
+Tailwind CLI `js_binary`, and HTML shell. The shell must contain exactly one
+`<!-- bazel:web-assets -->` marker. The build replaces it with references to the
+hashed JS and CSS entry files and packages the output as standard Quarkus
+`META-INF/resources` assets, with an equivalent `templates/spa.html` shell for a
+Qute SPA fallback resource.
+
+The result is a normal `JavaInfo` dependency for application and browser-test
+rules. All lifecycles consume the same resource layout and bundling pipeline.
+Bundling is selected by Bazel's `compilation_mode`: `opt` uses production
+`NODE_ENV`, minification, and the consumer's optimized browser link; `fastbuild`
+and `dbg` use development flags and the development link. Production Quarkus
+packaging rules enforce `opt` through an incoming configuration transition.
+Dev and tests share the development bundle, with one cached action per set of
+inputs and compilation mode. Frontend inputs are declared: an edit rebuilds the
+affected action, while unchanged test classes reuse the bundle artifact.
+
+Consumers own their npm lock, Node toolchain, Tailwind version and esbuild
+version. Tools must be Bazel-managed; no package manager or bundler is invoked
+from the developer's PATH. The rule does not support Quarkus Web Bundler tags.

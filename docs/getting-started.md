@@ -451,3 +451,6 @@ quarkus.toolchain(
 )
 use_repo(quarkus, "rules_quarkus")
 ```
+
+Frontend assets can be built once with Aspect rules_js/rules_esbuild and consumed
+as a normal dependency. See [Bazel frontend assets](web-assets.md).

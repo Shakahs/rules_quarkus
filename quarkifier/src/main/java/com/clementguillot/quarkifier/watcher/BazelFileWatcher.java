@@ -278,7 +278,13 @@ public final class BazelFileWatcher implements Closeable {
       return false;
     }
     String name = changed.toString();
-    return name.endsWith(".java") || name.endsWith(".scala") || name.endsWith(".kt");
+    return name.endsWith(".java")
+        || name.endsWith(".scala")
+        || name.endsWith(".kt")
+        || name.endsWith(".js")
+        || name.endsWith(".mjs")
+        || name.endsWith(".css")
+        || name.endsWith(".html");
   }
 
   /**

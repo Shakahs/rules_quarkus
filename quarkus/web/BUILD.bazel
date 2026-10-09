@@ -1,0 +1,14 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary")
+
+package(default_visibility = ["//visibility:public"])
+exports_files(["defs.bzl"])
+
+js_binary(
+    name = "assemble_resources",
+    entry_point = "assemble_resources.mjs",
+)
+
+config_setting(
+    name = "production",
+    values = {"compilation_mode": "opt"},
+)

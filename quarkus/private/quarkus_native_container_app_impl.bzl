@@ -8,6 +8,7 @@ This rule is not loaded directly by users — it is instantiated by the
 quarkus_app macro when native_container_build=True, creating a <name>_native target.
 """
 
+load("//quarkus/private:coverage_transition.bzl", "production_compilation_transition")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusNativeInfo")
@@ -188,9 +189,13 @@ def _quarkus_native_container_app_impl(ctx):
     ]
 
 quarkus_native_container_app_rule = rule(
+    cfg = production_compilation_transition,
     implementation = _quarkus_native_container_app_impl,
     executable = True,
     attrs = {
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
         "build_properties": attr.string_dict(
             doc = "Declared build-time properties passed hermetically to native-sources augmentation.",
         ),
