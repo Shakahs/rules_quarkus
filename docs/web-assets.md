@@ -7,7 +7,7 @@ never installs frontend dependencies or bundles JavaScript.
 
 Declare the bundle in the npm workspace package containing the linked
 `node_modules` tree. Supply the frontend source directory, linked browser module,
-Tailwind CLI `js_binary`, and HTML shell. The shell must contain exactly one
+Tailwind CLI `js_binary`, stylesheet, and HTML shell. The shell must contain exactly one
 `<!-- bazel:web-assets -->` marker. The build replaces it with references to the
 hashed JS and CSS entry files and packages the output as standard Quarkus
 `META-INF/resources` assets, with an equivalent `templates/spa.html` shell for a
@@ -26,3 +26,16 @@ affected action, while unchanged test classes reuse the bundle artifact.
 Consumers own their npm lock, Node toolchain, Tailwind version and esbuild
 version. Tools must be Bazel-managed; no package manager or bundler is invoked
 from the developer's PATH. The rule does not support Quarkus Web Bundler tags.
+
+The resource-library boundary removes the Quarkus code-generation lifecycle from
+frontend actions while preserving `compilation_mode`. Thus dev and tests share
+one development link and bundle, while production remains optimized. JavaScript,
+stylesheet and HTML inputs are staged separately: Tailwind scans the declared
+JavaScript and HTML trees, and esbuild depends on the compiled CSS rather than
+the HTML source. An HTML change that leaves CSS unchanged reuses the JS bundle.
+The archive maps esbuild's output directory directly to
+`META-INF/resources/_static`; HTML assembly writes only shells and metadata.
+
+Consumers can declare `quarkus_web_bundle_tests` from `quarkus/web/defs_test.bzl`
+against a local bundle to verify lifecycle cache sharing, JavaScript input
+isolation, and direct archive packaging using their actual frontend targets.

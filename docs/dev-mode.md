@@ -214,7 +214,8 @@ compile agrees with what Bazel produced.
 covers every language in the graph (`_WATCH_MARKERS`, plus whatever `dev_watch_dirs`
 names). A change under one of them rebuilds the dev target, and Bazel decides what
 that means; Quarkus sees the result as changed classes in the mutable directory.
-This is why the watcher matches on extension — `.java`, `.scala`, `.kt` — rather
+This is why the watcher matches on extension — `.java`, `.scala`, `.kt`, `.js`,
+`.mjs`, `.css`, `.html` — rather
 than on the enclosing directory: a source root also holds resources and editor
 droppings, and rebuilding on those would queue a build for every unrelated save.
 
@@ -240,12 +241,10 @@ diverge until some later rebuild happened to agree.
 
 `ClassSyncer` carries the whole application payload into the mutable classes
 directory, not only `.class` files. An application archive also holds the resources
-Quarkus and its extensions read from the classpath, and an extension can watch those
-by classpath location: the Web Bundler registers a
-`HotDeploymentWatchedFileBuildItem` over everything under its web root, so a rebuilt
-asset reaches the running application through exactly the path a rebuilt class does —
-by restarting it (see project files below for the alternative). Only jar packaging metadata is dropped — a manifest or signature file
-describes nothing in a class tree assembled from several jars.
+Quarkus and its extensions read from the classpath. `quarkus_web_bundle` packages
+hashed static assets and the generated Qute shell there, so a rebuild reaches the
+running application through the same sync path as a rebuilt class. Qute template
+changes trigger Quarkus reload; static assets retain their generated URLs.
 
 Unchanged entries are not rewritten. The dev loop syncs thousands of files where a
 rebuild changed a handful, and Quarkus decides what to reload from what changed on

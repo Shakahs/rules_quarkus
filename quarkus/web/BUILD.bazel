@@ -1,14 +1,21 @@
-load("@aspect_rules_js//js:defs.bzl", "js_binary")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_test")
 
 package(default_visibility = ["//visibility:public"])
-exports_files(["defs.bzl"])
+exports_files(["defs.bzl", "defs_test.bzl", "tests/FrontendArchiveTest.java"])
 
 js_binary(
     name = "assemble_resources",
     entry_point = "assemble_resources.mjs",
+    data = ["assemble_resources_lib.mjs"],
 )
 
 config_setting(
     name = "production",
     values = {"compilation_mode": "opt"},
+)
+
+js_test(
+    name = "assemble_resources_test",
+    entry_point = "assemble_resources_test.mjs",
+    data = ["assemble_resources_lib.mjs"],
 )
