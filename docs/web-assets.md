@@ -35,6 +35,8 @@ JavaScript and HTML trees, and esbuild depends on the compiled CSS rather than
 the HTML source. An HTML change that leaves CSS unchanged reuses the JS bundle.
 The archive maps esbuild's output directory directly to
 `META-INF/resources/_static`; HTML assembly writes only shells and metadata.
+Esbuild's public path is `/_static/`, so imported file assets such as WASM resolve
+to their packaged URLs from any application route.
 
 Consumers can declare `quarkus_web_bundle_tests` from `quarkus/web/defs_test.bzl`
 against a local bundle to verify lifecycle cache sharing, JavaScript input

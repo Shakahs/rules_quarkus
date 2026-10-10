@@ -127,6 +127,7 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
             "//conditions:default": {"process.env.NODE_ENV": "\"development\""},
         }),
         config = {
+            "publicPath": "/_static/",
             "entryNames": "app-[hash]",
             "chunkNames": "chunks/[name]-[hash]",
             "assetNames": "assets/[name]-[hash]",
