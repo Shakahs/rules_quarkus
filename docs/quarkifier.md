@@ -31,9 +31,8 @@ java -jar quarkifier_<minor>_deploy.jar \
   [--main-class <class>] \
   [--native-builder-image <image>] \
   [--source-dirs <dir,dir,...>] \
-  [--classes-dir <path>] \
+  [--watch-dirs <dir,dir,...>] \
   [--bazel-targets <label,label,...>] \
-  [--classes-output-dirs <dir,dir,...>] \
   [--workspace-dir <path>] \
   [--bazel-build-timeout-seconds <seconds>] \
   [--bazel-command <path>] \
@@ -62,10 +61,9 @@ java -jar quarkifier_<minor>_deploy.jar \
 | `--app-name` | No | `null` | Application name for Quarkus startup banner |
 | `--main-class` | No | `null` | Fully-qualified custom main class annotated with `@QuarkusMain` |
 | `--native-builder-image` | No | `null` | Native builder image for `platform.quarkus.native.builder-image` |
-| `--source-dirs` | No | `[]` | Comma-separated source directories for dev mode hot-reload |
-| `--classes-dir` | No | `null` | Mutable directory for .class files in dev mode |
+| `--source-dirs` | No | `[]` | Comma-separated Java source directories in dev mode: the hot-reload watcher observes them and the application's module root is derived from them; Quarkus is not told about them |
+| `--watch-dirs` | No | `[]` | Comma-separated directories the hot-reload watcher observes: the source roots of every language Bazel compiles |
 | `--bazel-targets` | No | `[]` | Comma-separated Bazel targets to rebuild on source changes |
-| `--classes-output-dirs` | No | `[]` | Comma-separated bazel-bin output directories containing .class files |
 | `--workspace-dir` | No | `null` | Bazel workspace root directory for running bazel build |
 | `--bazel-build-timeout-seconds` | No | `600` | Timeout in seconds for bazel build process |
 | `--bazel-command` | No | `bazel` | Bazel binary to invoke for hot-reload builds |
@@ -167,9 +165,8 @@ public record QuarkifierConfig(
     String mainClass,
     String nativeBuilderImage,
     List<Path> sourceDirs,
-    Path classesDir,
+    List<Path> watchDirs,
     List<String> bazelTargets,
-    List<Path> classesOutputDirs,
     Path workspaceDir,
     long bazelBuildTimeoutSeconds,
     String bazelCommand,

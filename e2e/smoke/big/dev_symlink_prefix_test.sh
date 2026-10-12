@@ -5,8 +5,8 @@
 # `bazel info execution_root` from the WORKSPACE directory (not the runfiles
 # cwd). Without the fix, the launcher runs it from the runfiles tree, which
 # spawns a stray Bazel server and falls back to $WORKSPACE_ROOT — making
-# --classes-output-dirs paths dangle when the default bazel-out symlink is
-# absent.
+# the exec-root-relative paths the launcher resolves (the dev project files)
+# dangle when the default bazel-out symlink is absent.
 #
 # Strategy: inject a `bazel` shim onto PATH that records the working directory
 # when `info execution_root` is invoked, then assert it matches the workspace.

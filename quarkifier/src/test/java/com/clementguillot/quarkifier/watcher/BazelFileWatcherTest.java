@@ -28,7 +28,6 @@ class BazelFileWatcherTest {
                 "--output-dir", outputDir.toString(),
                 "--mode", "dev",
                 "--app-name", "test-app",
-                "--classes-dir", tempDir.resolve("classes").toString(),
                 "--bazel-targets", "//pkg:lib",
                 "--workspace-dir", tempDir.toString(),
                 "--bazel-build-timeout-seconds", "5"));
@@ -100,11 +99,11 @@ class BazelFileWatcherTest {
   }
 
   @Test
-  void triggerBuildAndSync_serializesConcurrentCalls() throws Exception {
+  void triggerBuild_serializesConcurrentCalls() throws Exception {
     var config = testConfig(tempDir.resolve("output"), List.of());
     var watcher = new BazelFileWatcher(config);
 
-    // triggerBuildAndSync will fail the bazel build (no real bazel), but should not throw
+    // triggerBuild will fail the bazel build (no real bazel), but should not throw
     AtomicInteger callCount = new AtomicInteger(0);
     CountDownLatch latch = new CountDownLatch(2);
 
@@ -112,14 +111,14 @@ class BazelFileWatcherTest {
     Thread t1 =
         new Thread(
             () -> {
-              watcher.triggerBuildAndSync();
+              watcher.triggerBuild();
               callCount.incrementAndGet();
               latch.countDown();
             });
     Thread t2 =
         new Thread(
             () -> {
-              watcher.triggerBuildAndSync();
+              watcher.triggerBuild();
               callCount.incrementAndGet();
               latch.countDown();
             });

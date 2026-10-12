@@ -4,7 +4,6 @@ set -euo pipefail
 # Ensure cleanup runs on all exit conditions including errors and signals
 cleanup() {
     rm -rf "${OUTPUT_DIR:-}"
-    rm -rf "${CLASSES_DIR:-}"
     rm -f "${ABS_APP_CP_FILE:-}" "${ABS_CORE_DEPLOY_CP_FILE:-}" "${ABS_LOCAL_APP_JARS_FILE:-}"
 }
 trap cleanup EXIT ERR TERM INT QUIT ABRT
@@ -65,17 +64,11 @@ if [ -f "$RESOURCE_DIRS_FILE" ]; then
     RESOURCE_DIRS=$(cat "$RESOURCE_DIRS_FILE")
 fi
 
-# Read Bazel targets and classes output dirs for hot-reload
+# Read the Bazel targets the hot-reload watcher rebuilds
 BAZEL_TARGETS_FILE="${RUNFILES_DIR}/%{workspace}/%{bazel_targets_file}"
 BAZEL_TARGETS=""
 if [ -f "$BAZEL_TARGETS_FILE" ]; then
     BAZEL_TARGETS=$(cat "$BAZEL_TARGETS_FILE")
-fi
-
-CLASSES_OUTPUT_DIRS_FILE="${RUNFILES_DIR}/%{workspace}/%{classes_output_dirs_file}"
-CLASSES_OUTPUT_DIRS=""
-if [ -f "$CLASSES_OUTPUT_DIRS_FILE" ]; then
-    CLASSES_OUTPUT_DIRS=$(cat "$CLASSES_OUTPUT_DIRS_FILE")
 fi
 
 CODEGEN_INPUT_DIRS_FILE="${RUNFILES_DIR}/%{workspace}/%{codegen_input_dirs_file}"
@@ -84,9 +77,8 @@ if [ -f "$CODEGEN_INPUT_DIRS_FILE" ]; then
     CODEGEN_INPUT_DIRS=$(cat "$CODEGEN_INPUT_DIRS_FILE")
 fi
 
-# Create temp dirs with unique prefixes for security
+# Create the output dir with a unique prefix for security
 OUTPUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarkus_dev_output_XXXXXX")
-CLASSES_DIR=""
 
 # Resolve absolute paths for hot-reload if source dirs are available
 WORKSPACE_ROOT="${BUILD_WORKSPACE_DIRECTORY:-$(pwd)}"
@@ -153,8 +145,6 @@ if [ -n "$CODEGEN_INPUT_DIRS" ]; then
 fi
 
 if [ -n "$BAZEL_TARGETS" ] && { [ -n "$SOURCE_DIRS" ] || [ -n "$WATCH_DIRS" ] || [ -n "$CODEGEN_INPUT_DIRS_VALUE" ]; }; then
-    CLASSES_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quarkus_hotreload_classes_XXXXXX")
-
     # Resolve source dirs to absolute paths
     ABS_SOURCE_DIRS=""
     if [ -n "$SOURCE_DIRS" ]; then
@@ -177,25 +167,9 @@ if [ -n "$BAZEL_TARGETS" ] && { [ -n "$SOURCE_DIRS" ] || [ -n "$WATCH_DIRS" ] ||
         ABS_WATCH_DIRS=$(_join_comma "${WD_ABS[@]}")
     fi
 
-    # Resolve classes output dirs to absolute paths. Reading an empty value
-    # would yield one empty entry and hand the watcher the whole exec root.
-    ABS_CLASSES_OUTPUT_DIRS=""
-    if [ -n "$CLASSES_OUTPUT_DIRS" ]; then
-        COD_ABS=()
-        IFS=',' read -ra COD_ENTRIES <<< "$CLASSES_OUTPUT_DIRS"
-        for cod in "${COD_ENTRIES[@]}"; do
-            COD_ABS+=("${MODEL_EXEC_ROOT}/${cod}")
-        done
-        ABS_CLASSES_OUTPUT_DIRS=$(_join_comma "${COD_ABS[@]}")
-    fi
-
     HOT_RELOAD_ARGS=(
-      "--classes-dir" "$CLASSES_DIR"
       "--bazel-targets" "$BAZEL_TARGETS"
     )
-    if [ -n "$ABS_CLASSES_OUTPUT_DIRS" ]; then
-        HOT_RELOAD_ARGS+=("--classes-output-dirs" "$ABS_CLASSES_OUTPUT_DIRS")
-    fi
     if [ -n "$ABS_WATCH_DIRS" ]; then
         HOT_RELOAD_ARGS+=("--watch-dirs" "$ABS_WATCH_DIRS")
     fi

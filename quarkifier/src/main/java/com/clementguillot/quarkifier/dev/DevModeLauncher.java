@@ -11,7 +11,6 @@ import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.deployment.dev.DevModeContext;
 import io.quarkus.deployment.dev.DevModeMain;
-import io.quarkus.maven.dependency.ArtifactKey;
 import io.quarkus.maven.dependency.ResolvedDependency;
 import io.quarkus.paths.PathList;
 import java.io.ByteArrayOutputStream;
@@ -41,6 +40,12 @@ import org.jboss.logging.Logger;
  * process runs {@link DevModeMain#main} which bootstraps {@code IsolatedDevModeMain} inside a clean
  * augment classloader.
  *
+ * <p>The boundary between Bazel and dev mode is the application model. Dev mode runs what the model
+ * names, from where the model says it is: each workspace module's class path is the directory
+ * Bazel built for it, read in place. Dev mode never writes there and never compiles; a source edit
+ * rebuilds through Bazel ({@code BazelFileWatcher}), and Quarkus's own scan finds what the rebuild
+ * rewrote.
+ *
  * @see <a href="../../../../../../docs/dev-mode.md">docs/dev-mode.md</a> for the full architecture
  */
 @SuppressWarnings("PMD.ExceptionAsFlowControl")
@@ -65,7 +70,7 @@ public final class DevModeLauncher {
   public static void launch(QuarkifierConfig config, ApplicationModel appModel)
       throws AugmentationException {
     try {
-      DevModeContext context = buildDevModeContext(config);
+      DevModeContext context = buildDevModeContext(config, appModel);
 
       // Ensure the target directory exists — Quarkus writes build-metrics.json there.
       // In a Bazel workspace this directory doesn't exist by default (unlike Maven's target/).
@@ -78,14 +83,14 @@ public final class DevModeLauncher {
 
       // Dev jar mirrors Maven's DevMojo / DevModeCommandLineBuilder.
       Path devJar = createDevJar(context, config, appModel);
-      // Mirror the project files and populate the mutable classes directory before Quarkus
-      // performs its initial scan. Starting the child first creates a race where the application
-      // can boot without any user classes, or with the previous session's project files.
+      // Mirror the project files before Quarkus performs its initial scan. Starting the child
+      // first creates a race where the application can boot with the previous session's files.
       ProjectFileMirror projectFiles = new ProjectFileMirror(config.projectFiles());
       if (!projectFiles.isEmpty()) {
         projectFiles.mirror();
       }
-      BazelFileWatcher watcher = startWatcherIfConfigured(config, projectFiles);
+      BazelFileWatcher watcher =
+          startWatcherIfConfigured(config, projectFiles, moduleDirectories(context));
       Process process = null;
       try {
         process = startDevProcess(config, serializedModel, devJar);
@@ -194,11 +199,18 @@ public final class DevModeLauncher {
         && CLASS_CHANGE_AGENT_ARTIFACT_ID.equals(coords.artifactId());
   }
 
-  /** Starts the hot-reload file watcher when classes dir, targets, and source dirs are set. */
+  /** The Bazel-built directories every dev module runs from. */
+  private static List<Path> moduleDirectories(DevModeContext context) {
+    return context.getAllModules().stream()
+        .map(module -> Path.of(module.getMain().getClassesPath()))
+        .toList();
+  }
+
+  /** Starts the hot-reload file watcher when there are targets to rebuild and inputs to watch. */
   private static BazelFileWatcher startWatcherIfConfigured(
-      QuarkifierConfig config, ProjectFileMirror projectFiles) throws Exception {
-    if (config.classesDir() == null
-        || config.bazelTargets().isEmpty()
+      QuarkifierConfig config, ProjectFileMirror projectFiles, List<Path> moduleDirectories)
+      throws Exception {
+    if (config.bazelTargets().isEmpty()
         || (config.sourceDirs().isEmpty()
             && config.watchDirs().isEmpty()
             && config.resources().isEmpty()
@@ -206,7 +218,7 @@ public final class DevModeLauncher {
       return null;
     }
     LOGGER.debug("[hot-reload] Starting file watcher...");
-    return BazelFileWatcher.startInBackground(config, projectFiles);
+    return BazelFileWatcher.startInBackground(config, projectFiles, moduleDirectories);
   }
 
   /**
@@ -310,8 +322,13 @@ public final class DevModeLauncher {
     return new ArrayList<>(parentFirstJars);
   }
 
-  /** Builds a {@link DevModeContext} configured for Bazel-managed dev mode. */
-  static DevModeContext buildDevModeContext(QuarkifierConfig config) {
+  /**
+   * Builds a {@link DevModeContext} configured for Bazel-managed dev mode.
+   *
+   * <p>The modules are the model's: the application's own, and one per reloadable workspace
+   * dependency, each over the directory Bazel built for it ({@link #moduleInfo}).
+   */
+  static DevModeContext buildDevModeContext(QuarkifierConfig config, ApplicationModel appModel) {
     var context = new DevModeContext();
     context.setAbortOnFailedStart(true);
     context.setLocalProjectDiscovery(false);
@@ -335,8 +352,46 @@ public final class DevModeLauncher {
     devBuildProperties(config)
         .forEach((k, v) -> context.getBuildSystemProperties().put((String) k, (String) v));
 
-    context.setApplicationRoot(buildAppModuleInfo(config, projectRoot));
+    ResolvedDependency application = appModel.getAppArtifact();
+    context.setApplicationRoot(
+        moduleInfo(
+            application,
+            config.appName() != null ? config.appName() : application.getArtifactId(),
+            projectRoot,
+            // targetDir must be a child of projectRoot so that WorkspaceProcessor (which does
+            // targetDir.getParent() to find the project root) shows the correct source tree.
+            // launch() creates it, since Bazel workspaces don't have a target/ dir.
+            projectRoot.resolve("target")));
+    for (ResolvedDependency dependency : reloadableWorkspaceDependencies(appModel)) {
+      context
+          .getAdditionalModules()
+          .add(
+              moduleInfo(
+                  dependency,
+                  dependency.getArtifactId(),
+                  dependency.getWorkspaceModule().getModuleDir().toPath(),
+                  null));
+    }
     return context;
+  }
+
+  /**
+   * The workspace dependencies Quarkus reloads, in model order: exactly the ones {@code
+   * CuratedApplication} puts in the reloadable classloader. Each is a dev module, so that Quarkus's
+   * scan covers every directory a restart reloads.
+   */
+  // Visible for testing
+  static List<ResolvedDependency> reloadableWorkspaceDependencies(ApplicationModel appModel) {
+    var reloadableKeys = appModel.getReloadableWorkspaceDependencies();
+    return appModel.getDependencies().stream()
+        .filter(
+            dependency ->
+                dependency.getWorkspaceModule() != null
+                    && dependency.isRuntimeCp()
+                    && dependency.isJar()
+                    && dependency.isReloadable()
+                    && reloadableKeys.contains(dependency.getKey()))
+        .toList();
   }
 
   /**
@@ -376,45 +431,55 @@ public final class DevModeLauncher {
     return Optional.empty();
   }
 
-  /** Builds the {@link DevModeContext.ModuleInfo} for the application root. */
-  private static DevModeContext.ModuleInfo buildAppModuleInfo(
-      QuarkifierConfig config, Path projectRoot) {
-    Path appJar = config.applicationClasspath().get(0);
-    var coords = MavenCoordinateParser.parse(appJar);
-
-    // Key: classesPath points to mutable directory when available, otherwise the jar
-    Path classesPath = config.classesDir() != null ? config.classesDir() : appJar;
-
-    // The mutable directory is the module's resource root as well as its class root, and
-    // deliberately its only one. `RuntimeUpdatesProcessor.checkForFileChange` reads declared
-    // resource paths when it has them and copies changed files out of them, and scans the
-    // classes directory only when it has none — so declaring the workspace's resource
-    // directories would leave everything Bazel writes into the mutable directory unwatched.
-    // An extension that watches by classpath location would then never see a rebuild: the
-    // Web Bundler registers such a watch over its whole web root, which is how a relinked
-    // browser module reaches the running application at all.
-    //
-    // The cost is that a resource edit is delivered by the rebuild rather than copied
-    // straight out of the source tree, so it takes as long as one. That is the same
-    // exchange the rest of dev mode makes here: what runs is what Bazel built, and a
-    // source tree Quarkus copies from independently would diverge from it until the next
-    // rebuild happened to agree.
-
-    // targetDir must be a child of projectRoot so that WorkspaceProcessor (which does
-    // targetDir.getParent() to find the project root) shows the correct source tree.
-    // We create the directory in launch() since Bazel workspaces don't have a target/ dir.
-    Path targetDir = projectRoot.resolve("target");
-    Path resourcesOutputPath = config.classesDir() != null ? config.classesDir() : targetDir;
-
-    return new DevModeContext.ModuleInfo.Builder()
-        .setArtifactKey(ArtifactKey.ga(coords.groupId(), coords.artifactId()))
-        .setName(config.appName() != null ? config.appName() : coords.artifactId())
-        .setProjectDirectory(projectRoot.toAbsolutePath().toString())
-        .setSourcePaths(PathList.from(config.sourceDirs()))
-        .setClassesPath(classesPath.toAbsolutePath().toString())
-        .setResourcePaths(PathList.from(List.<Path>of()))
-        .setResourcesOutputPath(resourcesOutputPath.toAbsolutePath().toString())
-        .setTargetDir(targetDir.toAbsolutePath().toString())
-        .build();
+  /**
+   * Builds the {@link DevModeContext.ModuleInfo} of one model artifact: its class path is the
+   * directory the model resolves it to, which is the one Bazel built.
+   *
+   * <p>The module declares no sources. Quarkus compiles whatever it finds under a module's sources
+   * into the module's class path, and a module's class path here is a Bazel output: Bazel owns
+   * every compile, and its outputs are read-only to dev mode. With no sources, Quarkus's scan
+   * reads the directory and never writes to it — it neither compiles into it nor deletes a class
+   * whose source it cannot find.
+   *
+   * <p>The directory is the module's resource root as well as its class root, and deliberately its
+   * only one. {@code RuntimeUpdatesProcessor.checkForFileChange} reads declared resource paths when
+   * it has them and copies changed files out of them, and scans the classes directory only when it
+   * has none — so declaring the workspace's resource directories would make Quarkus copy out of
+   * the source tree and leave what Bazel writes unwatched. An extension that watches by classpath
+   * location would then never see a rebuild: the Web Bundler registers such a watch over its whole
+   * web root, which is how a relinked browser module reaches the running application at all.
+   *
+   * @param artifact the application artifact or a reloadable workspace dependency
+   * @param name the module's display name
+   * @param projectDirectory the workspace directory the module's sources live in
+   * @param targetDir the module's build target directory, or {@code null} for a dependency
+   * @throws IllegalStateException if the model does not resolve the artifact to exactly one path
+   */
+  private static DevModeContext.ModuleInfo moduleInfo(
+      ResolvedDependency artifact, String name, Path projectDirectory, Path targetDir) {
+    // Quarkus reads a module's class path as a single directory when it scans for changed
+    // resources, so an artifact the model spreads over several paths has no faithful module.
+    var paths = artifact.getResolvedPaths();
+    if (paths.size() != 1) {
+      throw new IllegalStateException(
+          "Dev module "
+              + artifact.toCompactCoords()
+              + " must resolve to exactly one class directory, got "
+              + paths);
+    }
+    String classesPath = paths.iterator().next().toAbsolutePath().toString();
+    var builder =
+        new DevModeContext.ModuleInfo.Builder()
+            .setArtifactKey(artifact.getKey())
+            .setName(name)
+            .setProjectDirectory(projectDirectory.toAbsolutePath().toString())
+            .setSourcePaths(PathList.empty())
+            .setClassesPath(classesPath)
+            .setResourcePaths(PathList.empty())
+            .setResourcesOutputPath(classesPath);
+    if (targetDir != null) {
+      builder.setTargetDir(targetDir.toAbsolutePath().toString());
+    }
+    return builder.build();
   }
 }

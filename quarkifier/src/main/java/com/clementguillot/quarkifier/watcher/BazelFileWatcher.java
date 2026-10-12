@@ -37,9 +37,11 @@ import org.jboss.logging.Logger;
  *   <li>Windows: ReadDirectoryChangesW
  * </ul>
  *
- * <p>Monitors source directories for {@code .java} file changes, debounces rapid edits, invokes
- * {@code bazel build} via {@link ProcessBuilder}, and syncs resulting {@code .class} files to the
- * mutable classes directory that {@code RuntimeUpdatesProcessor} monitors.
+ * <p>Monitors the application's source and resource directories, debounces rapid edits, and invokes
+ * {@code bazel build} via {@link ProcessBuilder}. That is all it does to the application: the dev
+ * modules' class paths are the directories Bazel writes ({@code DevModeLauncher}), so the rebuild
+ * itself is what Quarkus finds changed on its next scan. Nothing is copied out of Bazel's output
+ * tree.
  *
  * <p>Runs as a daemon thread inside the quarkifier process in DEV mode. Implements {@link
  * Closeable} to ensure the {@link WatchService} and executor are properly released.
@@ -61,16 +63,14 @@ public final class BazelFileWatcher implements Closeable {
   private final Map<Path, WatchKey> watchKeys = new ConcurrentHashMap<>();
   private final Path bazelLogPath;
 
-  /**
-   * Hot-reloadable class outputs, with locally-built Quarkus extension jars removed. An extension
-   * is a dependency, not part of the reloadable application: syncing its classes into the mutable
-   * classes directory would expose them to both the application and augment classloaders, breaking
-   * build-time config-mapping lookup ({@code SRCFG00027}).
-   */
-  private final List<Path> reloadableClassesOutputDirs;
-
   /** The built outputs the application reads from its project directory, re-mirrored per build. */
   private final ProjectFileMirror projectFiles;
+
+  /**
+   * The Bazel-built directories the dev modules run from. They are only read here, to tell whether
+   * a rebuild reached them ({@link #warnIfOutputsWentStale}).
+   */
+  private final List<Path> moduleDirectories;
 
   /**
    * Creates a new file watcher. The {@link WatchService} is created eagerly; call {@link #close()}
@@ -92,9 +92,25 @@ public final class BazelFileWatcher implements Closeable {
    * @throws IOException if the watch service cannot be created
    */
   BazelFileWatcher(QuarkifierConfig config, ProjectFileMirror projectFiles) throws IOException {
+    this(config, projectFiles, List.of());
+  }
+
+  /**
+   * Creates a new file watcher that re-mirrors {@code projectFiles} after every successful rebuild
+   * and warns when a rebuild reaches none of {@code moduleDirectories}.
+   *
+   * @param config the quarkifier configuration
+   * @param projectFiles the mirror of the configuration's project files, already brought up to date
+   *     by the launcher
+   * @param moduleDirectories the Bazel-built directories the dev modules run from
+   * @throws IOException if the watch service cannot be created
+   */
+  BazelFileWatcher(
+      QuarkifierConfig config, ProjectFileMirror projectFiles, List<Path> moduleDirectories)
+      throws IOException {
     this.config = config;
     this.projectFiles = projectFiles;
-    this.reloadableClassesOutputDirs = ClassSyncer.excludeExtensionJars(config.classesOutputDirs());
+    this.moduleDirectories = List.copyOf(moduleDirectories);
     this.watchService = FileSystems.getDefault().newWatchService();
     this.debounceExecutor =
         Executors.newSingleThreadScheduledExecutor(
@@ -120,11 +136,11 @@ public final class BazelFileWatcher implements Closeable {
   }
 
   /**
-   * Starts the file watcher in a daemon thread. Returns the watcher instance for shutdown. Initial
-   * classes population and watcher registration happen before this method starts the watcher
-   * thread, ensuring no file change events are missed during initialization.
+   * Starts the file watcher in a daemon thread. Returns the watcher instance for shutdown. Watcher
+   * registration happens before this method starts the watcher thread, ensuring no file change
+   * events are missed during initialization.
    *
-   * @param config the quarkifier configuration containing source dirs, classes dir, etc.
+   * @param config the quarkifier configuration containing source dirs, Bazel targets, etc.
    * @return the watcher instance (call {@link #close()} to stop)
    * @throws IOException if the watch service cannot be created or initial population fails
    */
@@ -136,35 +152,44 @@ public final class BazelFileWatcher implements Closeable {
    * Starts the file watcher in a daemon thread, re-mirroring {@code projectFiles} after every
    * successful rebuild.
    *
-   * @param config the quarkifier configuration containing source dirs, classes dir, etc.
+   * @param config the quarkifier configuration containing source dirs, Bazel targets, etc.
    * @param projectFiles the mirror of the configuration's project files
    * @return the watcher instance (call {@link #close()} to stop)
-   * @throws IOException if the watch service cannot be created or initial population fails
+   * @throws IOException if the watch service cannot be created
    */
   public static BazelFileWatcher startInBackground(
       QuarkifierConfig config, ProjectFileMirror projectFiles) throws IOException {
-    BazelFileWatcher watcher = new BazelFileWatcher(config, projectFiles);
-    try {
-      // Step 1: Populate initial classes FIRST (can take time, must complete before watching)
-      LOGGER.debug("[hot-reload] Populating initial classes...");
-      ClassSyncer.populateClassesDir(watcher.reloadableClassesOutputDirs, config.classesDir());
-      LOGGER.debug("[hot-reload] Initial classes populated");
+    return startInBackground(config, projectFiles, List.of());
+  }
 
-      // Step 2: Register watchers on all source directories
+  /**
+   * Starts the file watcher in a daemon thread, re-mirroring {@code projectFiles} after every
+   * successful rebuild and warning when a rebuild reaches none of {@code moduleDirectories}.
+   *
+   * @param config the quarkifier configuration containing source dirs, Bazel targets, etc.
+   * @param projectFiles the mirror of the configuration's project files
+   * @param moduleDirectories the Bazel-built directories the dev modules run from
+   * @return the watcher instance (call {@link #close()} to stop)
+   * @throws IOException if the watch service cannot be created
+   */
+  public static BazelFileWatcher startInBackground(
+      QuarkifierConfig config, ProjectFileMirror projectFiles, List<Path> moduleDirectories)
+      throws IOException {
+    BazelFileWatcher watcher = new BazelFileWatcher(config, projectFiles, moduleDirectories);
+    try {
       watcher.registerWatchers(config.sourceDirs());
       watcher.registerWatchers(config.watchDirs());
       watcher.registerWatchers(config.resources());
       watcher.registerWatchers(config.codegenInputDirs());
       LOGGER.debug("[hot-reload] File watchers registered");
 
-      // Step 3: Start watcher thread AFTER population is complete
       Thread watcherThread = new Thread(watcher::watchLoop, "hot-reload-watcher");
       watcherThread.setDaemon(true);
       watcherThread.start();
       LOGGER.debug("[hot-reload] Watcher thread started");
 
       return watcher;
-    } catch (IOException e) {
+    } catch (RuntimeException e) {
       watcher.close();
       throw e;
     }
@@ -290,10 +315,10 @@ public final class BazelFileWatcher implements Closeable {
   /**
    * Reports whether {@code changed} is a declared resource of the application.
    *
-   * <p>Resources reach the running application the same way classes do, through the rebuild and the
-   * sync into the mutable directory, because that directory is the only resource root Quarkus is
-   * given ({@code DevModeLauncher.buildAppModuleInfo}). Nothing else would deliver an edited
-   * resource, so the watcher has to rebuild on one.
+   * <p>Resources reach the running application the same way classes do, through the rebuild: the
+   * Bazel output directories are the only resource roots Quarkus is given ({@code
+   * DevModeLauncher.moduleInfo}). Nothing else would deliver an edited resource, so the watcher has
+   * to rebuild on one.
    *
    * <p>Matching is on location rather than on an extension: a resource directory holds whatever the
    * application puts there, and no extension distinguishes it.
@@ -358,16 +383,18 @@ public final class BazelFileWatcher implements Closeable {
       currentTask.cancel(false);
     }
     debounceTask =
-        debounceExecutor.schedule(
-            this::triggerBuildAndSync, DEFAULT_DEBOUNCE_MS, TimeUnit.MILLISECONDS);
+        debounceExecutor.schedule(this::triggerBuild, DEFAULT_DEBOUNCE_MS, TimeUnit.MILLISECONDS);
   }
 
   /**
-   * Triggers a build-and-sync cycle. Serializes builds using {@link AtomicBoolean} flags: only one
-   * {@code bazel build} runs at a time. If a build is already in progress, the request is queued
-   * and drained after the current build completes.
+   * Triggers a rebuild. Serializes builds using {@link AtomicBoolean} flags: only one {@code bazel
+   * build} runs at a time. If a build is already in progress, the request is queued and drained
+   * after the current build completes.
+   *
+   * <p>A successful build has already updated what the application runs: the dev modules' class
+   * paths are the directories the build writes. Only the project files are mirrored afterwards.
    */
-  void triggerBuildAndSync() {
+  void triggerBuild() {
     if (buildInProgress.compareAndSet(false, true)) {
       try {
         do {
@@ -378,11 +405,10 @@ public final class BazelFileWatcher implements Closeable {
 
           if (success) {
             warnIfOutputsWentStale(start);
-            syncClasses();
             mirrorProjectFiles();
-            LOGGER.debugf("[hot-reload] Build successful, classes synced (%dms)", elapsed);
+            LOGGER.debugf("[hot-reload] Build successful (%dms)", elapsed);
           } else {
-            LOGGER.warn("[hot-reload] Build failed, skipping sync");
+            LOGGER.warn("[hot-reload] Build failed");
           }
         } while (pendingBuild.get()); // drain queued builds
       } finally {
@@ -460,41 +486,39 @@ public final class BazelFileWatcher implements Closeable {
   }
 
   /**
-   * Warns (once per session) when a successful rebuild updated none of the recorded class output
-   * paths — the telltale sign that the rebuild ran in a different configuration than the original
-   * {@code bazel run} (e.g. the user launched dev mode with {@code --config} or {@code -c opt}), so
-   * hot-reload would silently sync stale classes.
+   * Warns (once per session) when a successful rebuild reached none of the module directories —
+   * the telltale sign that the rebuild ran in a different configuration than the original {@code
+   * bazel run} (e.g. the user launched dev mode with {@code --config} or {@code -c opt}), so its
+   * outputs landed in a different {@code bazel-out} tree than the one the application runs from.
    *
-   * <p>Directories are skipped (their mtime does not reflect nested changes); a fully-incremental
-   * no-op rebuild could in theory trigger a false warning, which is why this warns instead of
+   * <p>Each module directory is a tree artifact. Bazel clears a tree artifact before the action
+   * that writes it runs, which removes and recreates its top-level entries, so the directory's own
+   * modification time moves whenever its library is rebuilt. A rebuild that changed nothing the
+   * application runs moves none of them and could warn falsely, which is why this warns instead of
    * failing and only fires once.
    *
    * @param buildStartMillis wall-clock time at which the rebuild was started
    */
   private void warnIfOutputsWentStale(long buildStartMillis) {
-    if (staleOutputsWarned.get()) {
+    if (moduleDirectories.isEmpty() || staleOutputsWarned.get()) {
       return;
     }
     long threshold = buildStartMillis - 2000; // slack for coarse mtime granularity
-    for (Path path : reloadableClassesOutputDirs) {
+    for (Path directory : moduleDirectories) {
       try {
-        if (Files.isDirectory(path)) {
-          return; // cannot cheaply track directory freshness; assume OK
-        }
-        if (Files.exists(path) && Files.getLastModifiedTime(path).toMillis() >= threshold) {
-          return; // at least one output was rewritten by this build
+        if (Files.getLastModifiedTime(directory).toMillis() >= threshold) {
+          return; // the rebuild reached at least one module
         }
       } catch (IOException ignored) {
-        // Unreadable path — let syncClasses surface the real error.
+        // A directory Bazel is replacing, or one that is gone: not evidence either way.
       }
     }
     if (staleOutputsWarned.compareAndSet(false, true)) {
       LOGGER.warnf(
-          "[hot-reload] Build succeeded but none of the class output paths were updated: %s."
-              + " If you launch dev mode with extra Bazel flags (e.g. --config, -c opt), set"
-              + " dev_build_args on quarkus_app/quarkus_dev so hot-reload rebuilds use the same"
-              + " configuration — otherwise code changes will not be picked up.",
-          reloadableClassesOutputDirs);
+          "[hot-reload] Build succeeded but none of the application's class directories were"
+              + " updated. If you launch dev mode with extra Bazel flags (e.g. --config, -c opt),"
+              + " set dev_build_args on quarkus_app/quarkus_dev so hot-reload rebuilds use the"
+              + " same configuration, otherwise code changes will not be picked up.");
     }
   }
 
@@ -513,23 +537,7 @@ public final class BazelFileWatcher implements Closeable {
     }
   }
 
-  /**
-   * Delegates to {@link ClassSyncer#syncClasses(List, Path)} to copy changed {@code .class} files
-   * from bazel-bin output directories to the mutable classes directory.
-   */
-  void syncClasses() {
-    try {
-      ClassSyncer.syncClasses(reloadableClassesOutputDirs, config.classesDir());
-      LOGGER.debug("[hot-reload] Classes synced successfully");
-    } catch (IOException e) {
-      LOGGER.errorf("[hot-reload] Failed to sync classes: %s", e.getMessage());
-    }
-  }
-
-  /**
-   * Re-mirrors the project files from the outputs the rebuild just refreshed. They are mirrored
-   * after the classes so a rebuild that changed both reaches the application in one reload.
-   */
+  /** Re-mirrors the project files from the outputs the rebuild just refreshed. */
   void mirrorProjectFiles() {
     if (projectFiles.isEmpty()) {
       return;

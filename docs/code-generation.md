@@ -167,8 +167,9 @@ provider's source *parent*: gRPC looks in its `proto` child, so
 ## Dev regeneration
 
 Initial dev startup compiles Bazel-generated sources. The dev target watches
-the original generator inputs, rebuilds itself hermetically, and syncs the
-newly compiled classes through the normal hot-reload mechanism:
+the original generator inputs and rebuilds itself hermetically; the running
+application picks up the newly compiled classes through the normal hot-reload
+mechanism:
 
 ```starlark
 quarkus_app(

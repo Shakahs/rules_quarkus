@@ -7,15 +7,18 @@ import com.clementguillot.quarkifier.TestQuarkifierConfig;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
+import io.quarkus.bootstrap.workspace.WorkspaceModule;
+import io.quarkus.bootstrap.workspace.WorkspaceModuleId;
+import io.quarkus.deployment.dev.DevModeContext;
 import io.quarkus.maven.dependency.DependencyFlags;
 import io.quarkus.maven.dependency.ResolvedDependencyBuilder;
+import io.quarkus.paths.PathList;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.jar.JarOutputStream;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,29 +40,125 @@ class DevModeLauncherTest {
     return TestQuarkifierConfig.parse(args.toArray(String[]::new));
   }
 
+  private static final Path APP_CLASSES = Path.of("/bazel-bin/app/app.quarkus-classes");
+
+  /** The dev context for {@code config} over a model holding the application alone. */
+  private static DevModeContext context(QuarkifierConfig config) {
+    return DevModeLauncher.buildDevModeContext(config, modelBuilder().build());
+  }
+
+  /** A model builder whose application resolves to {@link #APP_CLASSES}. */
+  private static ApplicationModelBuilder modelBuilder() {
+    var builder = new ApplicationModelBuilder();
+    builder.setAppArtifact(
+        ResolvedDependencyBuilder.newInstance()
+            .setGroupId("bazel.workspace")
+            .setArtifactId("app")
+            .setVersion("1.0")
+            .setType("jar")
+            .setResolvedPath(APP_CLASSES)
+            .setRuntimeCp()
+            .setDeploymentCp());
+    return builder;
+  }
+
+  /** A workspace dependency the model resolves to {@code classes}. */
+  private static ResolvedDependencyBuilder workspaceDependency(
+      String artifactId, Path moduleDir, Path... classes) {
+    return ResolvedDependencyBuilder.newInstance()
+        .setGroupId("bazel.workspace")
+        .setArtifactId(artifactId)
+        .setVersion("1.0-SNAPSHOT")
+        .setType("jar")
+        .setResolvedPaths(PathList.of(classes))
+        .setWorkspaceModule(
+            WorkspaceModule.builder()
+                .setModuleId(WorkspaceModuleId.of("bazel.workspace", artifactId, "1.0-SNAPSHOT"))
+                .setModuleDir(moduleDir)
+                .setBuildDir(moduleDir.resolve("bazel-bin"))
+                .build())
+        .setRuntimeCp()
+        .setDeploymentCp();
+  }
+
+  /** Adds {@code dependency} to {@code builder} as a reloadable workspace module. */
+  private static void addReloadable(
+      ApplicationModelBuilder builder, ResolvedDependencyBuilder dependency) {
+    dependency.setReloadable();
+    builder.addDependency(dependency);
+    builder.addReloadableWorkspaceModule(dependency.getKey());
+  }
+
+  /** Bazel owns every compile: Quarkus is told of no sources, whatever the watcher observes. */
   @Test
-  void buildDevModeContext_withSourceDirs_setsSourcePaths() {
-    var sourceDirs = List.of(Path.of("src/main/java"), Path.of("lib/src/main/java"));
-    var config = devConfig("--source-dirs", "src/main/java,lib/src/main/java");
+  void buildDevModeContext_declaresNoSourcesToQuarkus() {
+    var context = context(devConfig("--source-dirs", "src/main/java,lib/src/main/java"));
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    assertTrue(context.getApplicationRoot().getMain().getSourcePaths().isEmpty());
+  }
 
-    assertNotNull(context.getApplicationRoot());
-    var actualPaths =
-        context.getApplicationRoot().getMain().getSourcePaths().stream()
-            .collect(Collectors.toSet());
-    var expectedPaths = sourceDirs.stream().map(Path::toAbsolutePath).collect(Collectors.toSet());
-    assertEquals(expectedPaths.size(), actualPaths.size());
-    for (Path expected : expectedPaths) {
-      assertTrue(
-          actualPaths.stream().anyMatch(p -> p.toAbsolutePath().equals(expected)),
-          "Expected source path " + expected + " not found in " + actualPaths);
-    }
+  @Test
+  void buildDevModeContext_applicationModuleReadsTheModelsDirectoryInPlace() {
+    var main = context(devConfig()).getApplicationRoot().getMain();
+
+    assertEquals(APP_CLASSES.toAbsolutePath().toString(), main.getClassesPath());
+    // The directory is the only resource root, so Quarkus scans it rather than copying into it.
+    assertTrue(main.getResourcePaths().isEmpty());
+    assertEquals(APP_CLASSES.toAbsolutePath().toString(), main.getResourcesOutputPath());
+  }
+
+  @Test
+  void buildDevModeContext_eachReloadableWorkspaceDependencyIsAModuleOverItsOwnDirectory() {
+    Path libDir = Path.of("/workspace/lib");
+    Path libClasses = Path.of("/bazel-bin/lib/lib.quarkus-classes");
+    var builder = modelBuilder();
+    addReloadable(builder, workspaceDependency("lib", libDir, libClasses));
+    // A workspace module the model does not mark reloadable, and an external jar, are not.
+    builder.addDependency(
+        workspaceDependency("fixed", Path.of("/workspace/fixed"), Path.of("/bazel-bin/fixed")));
+    builder.addDependency(
+        ResolvedDependencyBuilder.newInstance()
+            .setGroupId("org.example")
+            .setArtifactId("external")
+            .setVersion("1.0")
+            .setType("jar")
+            .setResolvedPath(Path.of("/cache/external-1.0.jar"))
+            .setRuntimeCp()
+            .setDeploymentCp());
+
+    var context = DevModeLauncher.buildDevModeContext(devConfig(), builder.build());
+
+    assertEquals(1, context.getAdditionalModules().size(), context.getAdditionalModules()::toString);
+    var module = context.getAdditionalModules().get(0);
+    assertEquals("lib", module.getArtifactKey().getArtifactId());
+    assertEquals(libDir.toAbsolutePath().toString(), module.getProjectDirectory());
+    assertEquals(libClasses.toAbsolutePath().toString(), module.getMain().getClassesPath());
+    assertTrue(module.getMain().getSourcePaths().isEmpty());
+    assertTrue(module.getMain().getResourcePaths().isEmpty());
+    assertEquals(
+        libClasses.toAbsolutePath().toString(), module.getMain().getResourcesOutputPath());
+  }
+
+  /** Quarkus scans a module's resources as one directory, so a module of several paths fails. */
+  @Test
+  void buildDevModeContext_failsForAModuleOfSeveralPaths() {
+    var builder = modelBuilder();
+    addReloadable(
+        builder,
+        workspaceDependency(
+            "split", Path.of("/workspace/split"), Path.of("/bazel-bin/a"), Path.of("/bazel-bin/b")));
+    var model = builder.build();
+
+    var error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> DevModeLauncher.buildDevModeContext(devConfig(), model));
+    assertTrue(error.getMessage().contains("split"), error::getMessage);
   }
 
   @Test
   void buildDevModeContext_withoutSourceDirs_emptySourcePaths() {
-    var context = DevModeLauncher.buildDevModeContext(devConfig());
+    var context = context(devConfig());
 
     assertNotNull(context.getApplicationRoot());
     var sourcePaths = context.getApplicationRoot().getMain().getSourcePaths();
@@ -72,12 +171,12 @@ class DevModeLauncherTest {
 
   @Test
   void buildDevModeContext_abortOnFailedStart_alwaysTrue() {
-    assertTrue(DevModeLauncher.buildDevModeContext(devConfig()).isAbortOnFailedStart());
+    assertTrue(context(devConfig()).isAbortOnFailedStart());
   }
 
   @Test
   void buildDevModeContext_localProjectDiscovery_alwaysFalse() {
-    var context = DevModeLauncher.buildDevModeContext(devConfig("--source-dirs", "src/main/java"));
+    var context = context(devConfig("--source-dirs", "src/main/java"));
 
     assertFalse(context.isLocalProjectDiscovery());
   }
@@ -89,7 +188,7 @@ class DevModeLauncherTest {
         propertiesFile, "smoke.ext.prefix=Declared\nquarkus.package.jar.type=legacy-jar\n");
 
     var context =
-        DevModeLauncher.buildDevModeContext(
+        context(
             devConfig("--build-properties-file", propertiesFile.toString()));
 
     assertEquals("Declared", context.getBuildSystemProperties().get("smoke.ext.prefix"));
@@ -103,7 +202,7 @@ class DevModeLauncherTest {
     Files.writeString(propertiesFile, "quarkus.package.main-class=wrong.Main\n");
 
     var context =
-        DevModeLauncher.buildDevModeContext(
+        context(
             devConfig(
                 "--build-properties-file",
                 propertiesFile.toString(),
@@ -118,7 +217,7 @@ class DevModeLauncherTest {
   void buildDevModeContext_fallsBackToOutputDir_whenWorkspaceDirNull() {
     var config = devConfig("--source-dirs", "src/main/java");
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    var context = context(config);
 
     assertEquals("my-app", context.getBaseName());
     // Falls back to outputDir when workspaceDir is null
@@ -137,7 +236,7 @@ class DevModeLauncherTest {
     var config =
         devConfig("--source-dirs", "src/main/java", "--workspace-dir", "/home/user/project");
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    var context = context(config);
 
     assertEquals(workspaceDir.toAbsolutePath().toFile(), context.getProjectDir());
     assertEquals(
@@ -151,7 +250,7 @@ class DevModeLauncherTest {
     var config =
         devConfig("--source-dirs", "src/main/java", "--workspace-dir", "/home/user/project");
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    var context = context(config);
 
     assertEquals(
         workspaceDir.resolve("target").toAbsolutePath().toString(),
@@ -166,7 +265,7 @@ class DevModeLauncherTest {
             "--source-dirs", "/home/user/project/app/src/main/java",
             "--resources", "/home/user/project/app/src/main/resources");
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    var context = context(config);
 
     var moduleRoot = Path.of("/home/user/project/app");
     assertEquals(moduleRoot.toFile(), context.getProjectDir());
@@ -185,7 +284,7 @@ class DevModeLauncherTest {
             "--source-dirs",
             "/home/user/project/app/src/main/java,/home/user/project/lib/src/main/java");
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    var context = context(config);
 
     assertEquals(Path.of("/home/user/project/app").toFile(), context.getProjectDir());
   }
@@ -197,34 +296,9 @@ class DevModeLauncherTest {
             "--workspace-dir", "/home/user/project",
             "--source-dirs", "/elsewhere/app/src/main/java");
 
-    var context = DevModeLauncher.buildDevModeContext(config);
+    var context = context(config);
 
     assertEquals(Path.of("/home/user/project").toFile(), context.getProjectDir());
-  }
-
-  @Test
-  void buildDevModeContext_withClassesDir_usesClassesDirForClassesPath() {
-    var classesDir = Path.of("/tmp/mutable-classes");
-    var config =
-        devConfig(
-            "--source-dirs", "src/main/java",
-            "--classes-dir", "/tmp/mutable-classes",
-            "--bazel-targets", "//pkg:lib");
-
-    var context = DevModeLauncher.buildDevModeContext(config);
-
-    assertEquals(
-        classesDir.toAbsolutePath().toString(),
-        context.getApplicationRoot().getMain().getClassesPath());
-  }
-
-  @Test
-  void buildDevModeContext_withoutClassesDir_usesAppJarForClassesPath() {
-    var context = DevModeLauncher.buildDevModeContext(devConfig("--source-dirs", "src/main/java"));
-
-    assertEquals(
-        Path.of("app.jar").toAbsolutePath().toString(),
-        context.getApplicationRoot().getMain().getClassesPath());
   }
 
   @Test

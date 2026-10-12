@@ -37,7 +37,7 @@ sequenceDiagram
     AC->>AE: execute(config)
     AE->>AE: buildApplicationModel(...)
     AE->>DML: launch(config, appModel)
-    DML->>DML: buildDevModeContext(config)
+    DML->>DML: buildDevModeContext(config, appModel)
     DML->>DML: AppModelSerializerImpl.serialize(appModel)
     DML->>DML: createDevJar(context, config, appModel)
     DML->>Child: ProcessBuilder: java -jar dev.jar
@@ -189,46 +189,77 @@ lifecycle avoids the whole question by fabricating a Maven-layout project direct
 per action (`test_launcher.sh.tpl`), which dev mode cannot do: its project
 directory is the tree the developer edits.
 
+## The Boundary: Bazel Builds, Dev Mode Reads
+
+Everything dev mode runs is a Bazel output, and the application model is the
+contract between the two. Every workspace target the application depends on has a
+class directory in the model (`<target>.quarkus-classes`, a tree artifact the model
+aspect merges from the target's runtime jars), and dev mode runs each target from
+exactly that directory:
+
+- The application's own directory is the class path of the dev context's
+  application module.
+- Every reloadable workspace dependency — exactly the set Quarkus loads into its
+  reloadable classloader — is an additional module over its own directory.
+
+Dev mode reads those directories in place. It copies nothing out of Bazel's output
+tree and assembles no directory of its own, so the archive layout dev mode runs is
+the one the model describes and the one tests and the packaged application run. A
+class is indexed once, in the archive Bazel built it into; a library that is a bean
+archive is one bean archive in dev mode as everywhere else.
+
+Hot reload is Bazel's rebuild plus Quarkus's own scan. A source edit makes
+`BazelFileWatcher` rebuild the dev target; the rebuild rewrites the directories of
+the libraries that changed; Quarkus's next scan (on the next HTTP request, as in any
+Quarkus application) finds their new timestamps and restarts. Quarkus learns of the
+change from the files themselves, in exactly the modules Bazel rewrote.
+
+A request that arrives while a build is rewriting a directory can scan it half
+written, and a class not yet loaded can be briefly missing. Both resolve on the next
+request after the build finishes.
+
+### Modules declare no sources
+
+A module's sources are what Quarkus compiles itself, with its own
+`CompilationProvider`, into the module's class path. Here every class path is a
+Bazel output, so every module declares none: Bazel owns every compile, in every
+language, against the classpath the target was built with. With no sources,
+Quarkus's scan only reads a module's directory — it neither compiles into it nor
+deletes a class whose source it cannot find — and Bazel's outputs stay read-only to
+dev mode. A Java edit therefore reloads through the Bazel rebuild, as a Scala or
+Kotlin edit does.
+
 ## Source Directory Flow
 
 1. `collect_source_dir_paths()` in the Starlark rule finds `src/main/java` markers in dep source files
 2. Source dirs are written to a runfiles file and passed via `--source-dirs`
-3. `DevModeLauncher` sets them as `sourcePaths` in `DevModeContext.ModuleInfo`
-4. `IsolatedDevModeMain` creates a `RuntimeUpdatesProcessor` that watches these directories
+3. `BazelFileWatcher` watches them, and `DevModeLauncher` derives the application's
+   module root from them ([Project Root](#project-root)); Quarkus is not told about
+   them
 
 When source dirs, watch dirs, and code-generation input dirs are all empty,
 hot-reload is disabled but the Dev UI still works. Declared code-generation inputs
 keep the rebuild watcher active even when there are no Java source dirs.
 
-### Two source lists, because two things watch
-
-`--source-dirs` tells Quarkus what the module's sources are, and Quarkus compiles
-what it finds under them with its own `CompilationProvider`. Under Bazel that is
-a claim about ownership, not just a path list: a Scala root declared there makes
-Quarkus compile Scala off the dev classpath, beside the Bazel action that already
-owns that compile and against a classpath that is not the one the target was built
-with. So the list stays Java-only, which is the one language whose in-process
-compile agrees with what Bazel produced.
-
-`--watch-dirs` is the rules' own list, read only by `BazelFileWatcher`, and it
+`--watch-dirs` is the rules' own list, also read only by `BazelFileWatcher`, and it
 covers every language in the graph (`_WATCH_MARKERS`, plus whatever `dev_watch_dirs`
 names). A change under one of them rebuilds the dev target, and Bazel decides what
-that means; Quarkus sees the result as changed classes in the mutable directory.
+that means; Quarkus sees the result as changed classes in the module directories.
 This is why the watcher matches on extension — `.java`, `.scala`, `.kt`, `.js`,
 `.mjs`, `.css`, `.html` — rather
 than on the enclosing directory: a source root also holds resources and editor
 droppings, and rebuilding on those would queue a build for every unrelated save.
 
-### One resource root: the mutable directory
+### One resource root per module: its class directory
 
-The module's declared resource paths are deliberately empty, and its resources output
-path is the mutable classes directory.
+A module's declared resource paths are deliberately empty, and its resources output
+path is its class directory.
 `RuntimeUpdatesProcessor.checkForFileChange` reads declared resource paths when it has
 them, copying changed files out of the source tree itself, and scans the classes
 directory only when it has none. Declaring the workspace's resource directories would
-therefore leave everything Bazel writes into the mutable directory unwatched, and an
-extension that watches by classpath location would never see a rebuild — the Web
-Bundler registers exactly such a watch over its web root.
+therefore make Quarkus copy out of the source tree and leave everything Bazel writes
+unwatched, and an extension that watches by classpath location would never see a
+rebuild — the Web Bundler registers exactly such a watch over its web root.
 
 The cost is that a resource edit is delivered by a rebuild rather than copied straight
 out of the source tree, so it takes as long as one. `BazelFileWatcher` therefore
@@ -237,19 +268,12 @@ The exchange is the same one the rest of dev mode makes here: what runs is what 
 built, rather than a source tree Quarkus copies from independently and which would
 diverge until some later rebuild happened to agree.
 
-### What the sync delivers
-
-`ClassSyncer` carries the whole application payload into the mutable classes
-directory, not only `.class` files. An application archive also holds the resources
-Quarkus and its extensions read from the classpath. `quarkus_web_bundle` packages
-hashed static assets and the generated Qute shell there, so a rebuild reaches the
-running application through the same sync path as a rebuilt class. Qute template
-changes trigger Quarkus reload; static assets retain their generated URLs.
-
-Unchanged entries are not rewritten. The dev loop syncs thousands of files where a
-rebuild changed a handful, and Quarkus decides what to reload from what changed on
-disk; rewriting every file would make each reload look like a change to the whole
-application.
+The class directories carry the whole application payload, not only `.class` files:
+an application archive also holds the resources Quarkus and its extensions read from
+the classpath. `quarkus_web_bundle` packages hashed static assets and the generated
+Qute shell there, so a rebuild reaches the running application the same way a
+rebuilt class does. Qute template changes trigger Quarkus reload; static assets retain
+their generated URLs.
 
 An application that wants a different artifact in the dev loop than the one it
 packages selects on `@rules_quarkus//quarkus:dev_lifecycle`, which is true
@@ -260,7 +284,7 @@ place of the whole-program one, for instance.
 
 A classpath change is not always the cheapest reload an extension offers. The Web
 Bundler watches everything on the classpath under its web root with
-`restartNeeded(true)`, so a rebuilt browser module delivered by the sync restarts the
+`restartNeeded(true)`, so a rebuilt browser module on the classpath restarts the
 application. The same file in the module's local web directory (`<module>/web`,
 resolved against the project root) is something the bundler symlinks into its staging
 directory and watches itself: a modification re-bundles and live-reloads the browser
@@ -278,8 +302,7 @@ quarkus_app(
 ```
 
 `ProjectFileMirror` brings each directory in line with its outputs before the
-application starts and again after every successful hot-reload rebuild, right after the
-class sync.
+application starts and again after every successful hot-reload rebuild.
 The directory belongs to the session: after a mirror it holds exactly the files of its
 outputs, and anything else in it is deleted, so it must be a directory of its own and
 never one holding checked-in files. That exact mirroring is what makes a restarted
@@ -355,8 +378,7 @@ re-bundles without a restart.
 
 Code generation always runs through Bazel before the initial dev startup.
 The launcher watches the declared generator input directories and rebuilds the
-`<name>_dev` target before syncing classes, which keeps regeneration sandboxed
-and cacheable.
+`<name>_dev` target, which keeps regeneration sandboxed and cacheable.
 
 Dev mode regenerates under its own lifecycle: `deps` are configured through
 `dev_lifecycle_transition`, so `quarkus_codegen` runs with launch mode
@@ -366,8 +388,8 @@ mode or config profile can therefore emit different sources in dev than in a
 production or test build — worth checking first when a bug reproduces only under
 `bazel run //:app_dev`. That transition is also why the watcher always rebuilds
 the dev target itself rather than its deps: a dep built directly from the command
-line would land in the baseline output tree, and hot-reload would sync stale
-classes.
+line would land in the baseline output tree, which the running application
+does not run from.
 
 Because the transition changes a build setting, the dev dependency graph gets
 its own configuration. `bazel cquery 'deps(//:app_dev) intersect //:lib'` and
@@ -380,11 +402,11 @@ That is the cost of making code generation launch-mode aware; build only
 
 On a source change, `BazelFileWatcher` runs `bazel build <targets>` (binary resolved by
 the launcher: `bazel` from `PATH`, falling back to `bazelisk`; overridable via
-`--bazel-command`). The class output paths it syncs from were recorded **at analysis
-time**, in the configuration used to build the dev target — so if you launch dev mode
-with configuration-affecting flags (`--config`, `-c opt`, `--define`, ...), the
-hot-reload build must use the same flags or its outputs land in a different
-`bazel-out/<config>` tree and the sync picks up stale files. Pass them via
+`--bazel-command`). The class directories the application runs from were recorded
+**at analysis time**, in the application model built in the dev target's configuration —
+so if you launch dev mode with configuration-affecting flags (`--config`, `-c opt`,
+`--define`, ...), the hot-reload build must use the same flags or its outputs land in a
+different `bazel-out/<config>` tree that the application never reads. Pass them via
 `dev_build_args`:
 
 ```starlark
@@ -396,8 +418,8 @@ quarkus_app(
 ```
 
 Then run `bazel run --config=dev //pkg:app_dev`. The watcher warns once per session
-when a successful rebuild updates none of the recorded class outputs — the telltale
-sign of a configuration mismatch. The rebuild timeout defaults to 600 s
+when a successful rebuild updates none of the module class directories — the
+telltale sign of a configuration mismatch. The rebuild timeout defaults to 600 s
 (`--bazel-build-timeout-seconds`); on timeout or build failure, the tail of
 `bazel-hot-reload.log` is echoed to the console.
 
@@ -420,7 +442,7 @@ classloader resolves `ClassChangeAgent` from the system class loader, where the 
 registered it, rather than loading a second, empty copy.
 
 What counts as a body-only change is Quarkus's decision, made on the class files a
-rebuild syncs: added or removed methods, fields or annotations still restart the
+rebuild rewrites: added or removed methods, fields or annotations still restart the
 application. For Scala sources this is narrower than it looks, because a lambda or an
 `inline` expansion becomes a synthetic method of the enclosing class, so adding one is
 a structural change.

@@ -129,7 +129,9 @@ public final class AugmentationCommand implements Callable<Integer> {
 
   @Option(
       names = "--source-dirs",
-      description = "Comma-separated source directories for hot-reload in dev mode.",
+      description =
+          "Comma-separated Java source directories in dev mode: the hot-reload watcher observes"
+              + " them and the application's module root is derived from them.",
       split = ",")
   private List<Path> sourceDirs;
 
@@ -142,20 +144,11 @@ public final class AugmentationCommand implements Callable<Integer> {
       split = ",")
   private List<Path> watchDirs;
 
-  @Option(names = "--classes-dir", description = "Mutable directory for .class files in dev mode.")
-  private Path classesDir;
-
   @Option(
       names = "--bazel-targets",
       description = "Comma-separated Bazel targets to rebuild on source changes.",
       split = ",")
   private List<String> bazelTargets;
-
-  @Option(
-      names = "--classes-output-dirs",
-      description = "Comma-separated bazel-bin output directories containing .class files.",
-      split = ",")
-  private List<Path> classesOutputDirs;
 
   @Option(
       names = "--artifact-paths-file",
@@ -268,9 +261,7 @@ public final class AugmentationCommand implements Callable<Integer> {
         nativeBuilderImage,
         orEmpty(sourceDirs),
         orEmpty(watchDirs),
-        classesDir,
         orEmpty(bazelTargets),
-        orEmpty(classesOutputDirs),
         workspaceDir,
         bazelBuildTimeoutSeconds,
         bazelCommand,

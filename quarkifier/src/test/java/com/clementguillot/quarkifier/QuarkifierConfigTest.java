@@ -201,25 +201,6 @@ class QuarkifierConfigTest {
   }
 
   @Test
-  void parse_classesDir() {
-    var config =
-        parse(
-            "--application-classpath", "a.jar",
-            "--output-dir", "/out",
-            "--classes-dir", "/tmp/classes");
-    assertEquals(Path.of("/tmp/classes"), config.classesDir());
-  }
-
-  @Test
-  void parse_absentClassesDirDefaultsToNull() {
-    var config =
-        parse(
-            "--application-classpath", "a.jar",
-            "--output-dir", "/out");
-    assertNull(config.classesDir());
-  }
-
-  @Test
   void parse_bazelTargets() {
     var config =
         parse(
@@ -236,27 +217,6 @@ class QuarkifierConfigTest {
             "--application-classpath", "a.jar",
             "--output-dir", "/out");
     assertTrue(config.bazelTargets().isEmpty());
-  }
-
-  @Test
-  void parse_classesOutputDirs() {
-    var config =
-        parse(
-            "--application-classpath", "a.jar",
-            "--output-dir", "/out",
-            "--classes-output-dirs", "bazel-bin/pkg/lib,bazel-bin/pkg/other");
-    assertEquals(
-        List.of(Path.of("bazel-bin/pkg/lib"), Path.of("bazel-bin/pkg/other")),
-        config.classesOutputDirs());
-  }
-
-  @Test
-  void parse_absentClassesOutputDirsDefaultsToEmptyList() {
-    var config =
-        parse(
-            "--application-classpath", "a.jar",
-            "--output-dir", "/out");
-    assertTrue(config.classesOutputDirs().isEmpty());
   }
 
   @Test

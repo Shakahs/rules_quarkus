@@ -19,12 +19,12 @@ import java.util.Map;
  *     be {@code null})
  * @param nativeBuilderImage the native builder image for {@code
  *     platform.quarkus.native.builder-image} (may be {@code null})
- * @param sourceDirs source directories declared to Quarkus as the module's sources
+ * @param sourceDirs the Java source roots of the application's graph: the hot-reload watcher
+ *     observes them, and the application's module root is derived from them. Quarkus is not told
+ *     about them, because Bazel owns every compile
  * @param watchDirs directories the hot-reload watcher observes — the source roots of every language
- *     Bazel compiles, which Quarkus is not told about because Bazel owns those compiles
- * @param classesDir mutable directory for .class files in dev mode (may be {@code null})
+ *     Bazel compiles
  * @param bazelTargets Bazel targets to rebuild on source changes
- * @param classesOutputDirs bazel-bin output directories containing .class files
  * @param workspaceDir Bazel workspace root directory for running bazel build (may be {@code null})
  * @param bazelBuildTimeoutSeconds timeout in seconds for bazel build process (default: 600)
  * @param bazelCommand bazel binary to invoke for hot-reload builds (default: {@code bazel})
@@ -50,9 +50,7 @@ public record QuarkifierConfig(
     String nativeBuilderImage,
     List<Path> sourceDirs,
     List<Path> watchDirs,
-    Path classesDir,
     List<String> bazelTargets,
-    List<Path> classesOutputDirs,
     Path workspaceDir,
     long bazelBuildTimeoutSeconds,
     String bazelCommand,
