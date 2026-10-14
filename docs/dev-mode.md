@@ -202,21 +202,71 @@ exactly that directory:
 - Every reloadable workspace dependency — exactly the set Quarkus loads into its
   reloadable classloader — is an additional module over its own directory.
 
-Dev mode reads those directories in place. It copies nothing out of Bazel's output
-tree and assembles no directory of its own, so the archive layout dev mode runs is
-the one the model describes and the one tests and the packaged application run. A
-class is indexed once, in the archive Bazel built it into; a library that is a bean
-archive is one bean archive in dev mode as everywhere else.
+Dev mode never reads those directories in place. Bazel deletes an action's outputs
+before it runs the action again (`AbstractAction.prepare` → `deleteOutputs`, for every
+action that is not an action-cache hit), so a library's class directory is missing or
+half written for as long as its rebuild takes. A Quarkus scan or restart that read it
+then would augment an application with classes, configuration, or entities missing.
 
-Hot reload is Bazel's rebuild plus Quarkus's own scan. A source edit makes
-`BazelFileWatcher` rebuild the dev target; the rebuild rewrites the directories of
-the libraries that changed; Quarkus's next scan (on the next HTTP request, as in any
-Quarkus application) finds their new timestamps and restarts. Quarkus learns of the
-change from the files themselves, in exactly the modules Bazel rewrote.
+### The dev session: generations of each build
 
-A request that arrives while a build is rewriting a directory can scan it half
-written, and a class not yet loaded can be briefly missing. Both resolve on the next
-request after the build finishes.
+Each dev run has a session directory, `<output-dir>/dev-session` (`DevSession`):
+
+```
+dev-session/
+  current -> gen-3            # what the application runs
+  ready   -> gen-4            # the newest complete build
+  gen-3/000-app/...           # one directory per dev module
+  gen-3/001-customer/...
+  gen-4/...
+  rules-quarkus-dev-session.jar
+```
+
+- A generation holds every dev module's class directory as it stood after one
+  successful build, as one hard link per file. Bazel's later deletion removes only its
+  own name for a file, so a generation stays complete, and nothing is copied. Linked
+  files keep Bazel's modification times, so Quarkus sees changed exactly the classes the
+  build changed. A file is copied, with its attributes, only where the session
+  directory cannot hard-link it (another file system), and the watcher warns once.
+  A symbolic link in a class directory is linked as the file it names.
+- The launcher links generation 0 before the application starts. After every
+  successful hot-reload build, the watcher links the next one and renames `ready` onto
+  it. A failed build publishes nothing, and the application keeps the last good build.
+- Every module's class path, in the dev context and in the dev model alike, is
+  `current/<module>`. The model builder keeps those paths as given rather than
+  resolving them, which would pin the application to one generation.
+- Generations older than the one before `current` are deleted at each publication.
+
+`current` moves only inside Quarkus's scan. `GenerationSwitch`, a
+`HotReplacementSetup`, registers a pre-scan step; `RuntimeUpdatesProcessor.doScan`
+runs those steps under its scan lock, before it checks the class paths for changes
+and restarts. The step renames `current` onto `ready`'s generation, one atomic rename
+for every module at once. The scan and the restart it causes therefore read a single
+complete build, and the application's class paths never change between scans. The
+switch also watches the session directory: when `ready` is renamed into place it
+starts a scan itself (`HotReplacementContext.doScan`), so a build reaches the
+application without waiting for an HTTP request.
+
+Quarkus discovers `HotReplacementSetup` only through its base runtime class loader,
+which holds the model's non-reloadable runtime dependencies. That loader consults its
+parent, the dev jar, only for a service none of its own jars provide, and the Vert.x
+HTTP runtime jar provides this one. The launcher therefore writes
+`rules-quarkus-dev-session.jar` (the switch class and its service file) and adds it
+to the **dev** model as one runtime dependency,
+`com.clementguillot.rules_quarkus:dev-session-hook:1`. It is launcher
+infrastructure, like the dev jar: nothing in the application's graph depends on it,
+and no other lifecycle has it.
+
+The archive layout dev mode runs is still the one the model describes and the one
+tests and the packaged application run: one directory per workspace library. A class
+is indexed once, in the archive Bazel built it into; a library that is a bean archive
+is one bean archive in dev mode as everywhere else.
+
+Hot reload is Bazel's rebuild, the session's publication, and Quarkus's own scan. A
+source edit makes `BazelFileWatcher` rebuild the dev target; the rebuild rewrites the
+directories of the libraries that changed; the watcher links them into a generation
+and marks it ready; the switch starts a scan, moves `current`, and Quarkus finds the
+changed timestamps and restarts.
 
 ### Modules declare no sources
 
@@ -418,7 +468,7 @@ quarkus_app(
 ```
 
 Then run `bazel run --config=dev //pkg:app_dev`. The watcher warns once per session
-when a successful rebuild updates none of the module class directories — the
+when a successful rebuild updates none of the modules' Bazel class directories — the
 telltale sign of a configuration mismatch. The rebuild timeout defaults to 600 s
 (`--bazel-build-timeout-seconds`); on timeout or build failure, the tail of
 `bazel-hot-reload.log` is echoed to the console.

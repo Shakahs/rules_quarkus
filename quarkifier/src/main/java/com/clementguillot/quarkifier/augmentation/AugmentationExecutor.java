@@ -51,13 +51,18 @@ public final class AugmentationExecutor {
       }
 
       ClasspathPartition partition = LocalExtensionAppJars.reclassify(partitionClasspath(config));
-      ApplicationModel appModel = buildModel(config);
+      BazelApplicationModel explicitModel = readModel(config);
+      if (config.mode() == AugmentationMode.DEV) {
+        // DEV: DevModeLauncher builds the model over its session's class directories and starts
+        // IsolatedDevModeMain with full Dev UI and hot-reload support.
+        DevModeLauncher.launch(config, explicitModel);
+        return;
+      }
+      ApplicationModel appModel =
+          ExplicitApplicationModelBuilder.build(explicitModel, config.artifactPaths());
       List<Path> effectiveRuntimeJars = RuntimeJarSelector.select(partition, appModel);
 
       switch (config.mode()) {
-          // DEV: delegate to DevModeLauncher which starts IsolatedDevModeMain
-          // with full Dev UI and hot-reload support.
-        case DEV -> DevModeLauncher.launch(config, appModel);
           // TEST: serialize the ApplicationModel for use by QuarkusTestExtension.
           // No augmentation is run — the test JVM handles that via QuarkusBootstrap.Mode.TEST.
         case TEST -> serializeTestModel(outputDir, appModel);
@@ -144,14 +149,14 @@ public final class AugmentationExecutor {
     Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
   }
 
-  private static ApplicationModel buildModel(QuarkifierConfig config) throws Exception {
+  private static BazelApplicationModel readModel(QuarkifierConfig config) throws Exception {
     if (config.applicationModel() == null) {
       throw new AugmentationException("--application-model is required");
     }
     var explicitModel = BazelApplicationModelReader.read(config.applicationModel());
     validateModelCompatibility(config.mode(), explicitModel);
     config.packageType().validateCompatibility(config.mode());
-    return ExplicitApplicationModelBuilder.build(explicitModel, config.artifactPaths());
+    return explicitModel;
   }
 
   static void validateModelCompatibility(AugmentationMode mode, BazelApplicationModel explicitModel)

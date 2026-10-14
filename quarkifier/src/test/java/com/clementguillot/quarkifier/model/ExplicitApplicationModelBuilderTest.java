@@ -1,6 +1,7 @@
 package com.clementguillot.quarkifier.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.clementguillot.quarkifier.model.transport.BazelApplicationModel;
@@ -166,5 +167,127 @@ class ExplicitApplicationModelBuilderTest {
             .next()
             .getClass()
             .getName());
+  }
+
+  /** A dev model whose application is a workspace module built into {@code classDirectory}. */
+  private static BazelApplicationModel devModel(Path tempDir, String classDirectory) {
+    var sourceSet =
+        new BazelApplicationModel.SourceSet(
+            "",
+            List.of(tempDir.resolve("src/main/java").toString()),
+            List.of(),
+            List.of(classDirectory),
+            List.of(),
+            List.of());
+    var workspace =
+        new BazelApplicationModel.WorkspaceModule(
+            "workspace",
+            "//:app",
+            tempDir.toString(),
+            tempDir.resolve("bazel-bin").toString(),
+            tempDir.resolve("BUILD.bazel").toString(),
+            List.of(sourceSet),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            null);
+    var application =
+        new BazelApplicationModel.Node(
+            "app",
+            BazelApplicationModel.NodeKind.APPLICATION,
+            new BazelApplicationModel.ArtifactCoordinates("test", "app", "", "jar", "1.0"),
+            List.of(classDirectory),
+            List.of(),
+            new BazelApplicationModel.ClasspathFacts(
+                false, true, false, false, false, false, false),
+            workspace.id(),
+            "//:app");
+    return new BazelApplicationModel(
+        BazelApplicationModel.SCHEMA_VERSION,
+        new BazelApplicationModel.Producer("test", "1"),
+        com.clementguillot.quarkifier.QuarkifierVersionProvider.targetedQuarkusVersion(),
+        BazelApplicationModel.Mode.DEV,
+        application.id(),
+        List.of(application),
+        List.of(workspace),
+        new BazelApplicationModel.Platform(List.of(), Map.of(), List.of()));
+  }
+
+  @Test
+  void devSessionModulesAreReadThroughTheSessionsLinkUnresolved(@TempDir Path tempDir)
+      throws Exception {
+    Path bazel = Files.createDirectories(tempDir.resolve("bazel-out/app.quarkus-classes"));
+    Path generation = Files.createDirectories(tempDir.resolve("session/gen-0/000-app"));
+    Files.createSymbolicLink(tempDir.resolve("session/current"), Path.of("gen-0"));
+    Path sessionPath = tempDir.resolve("session/current/000-app");
+
+    var built =
+        ExplicitApplicationModelBuilder.build(
+            devModel(tempDir, bazel.toString()),
+            Map.of(),
+            new ExplicitApplicationModelBuilder.DevSessionPaths(
+                Map.of(bazel.toString(), sessionPath), null));
+
+    // Resolving the path would pin the application to gen-0 for good.
+    assertEquals(sessionPath, built.getAppArtifact().getResolvedPaths().getSinglePath());
+    assertEquals(
+        sessionPath,
+        built
+            .getAppArtifact()
+            .getWorkspaceModule()
+            .getMainSources()
+            .getSourceDirs()
+            .iterator()
+            .next()
+            .getOutputDir());
+    assertTrue(Files.isSameFile(generation, sessionPath));
+  }
+
+  @Test
+  void devSessionHookIsANonReloadableRuntimeDependency(@TempDir Path tempDir) throws Exception {
+    Path bazel = Files.createDirectories(tempDir.resolve("bazel-out/app.quarkus-classes"));
+    Path hookJar = tempDir.resolve("hook.jar");
+    try (var ignored = new JarOutputStream(Files.newOutputStream(hookJar))) {
+      // The jar's content is DevSession's concern.
+    }
+
+    var built =
+        ExplicitApplicationModelBuilder.build(
+            devModel(tempDir, bazel.toString()),
+            Map.of(),
+            new ExplicitApplicationModelBuilder.DevSessionPaths(Map.of(), hookJar));
+
+    // CuratedApplication puts getDependencies()' runtime entries in the base runtime class loader.
+    var hook =
+        built.getDependencies().stream()
+            .filter(
+                dependency ->
+                    dependency
+                        .toGACTVString()
+                        .equals(ExplicitApplicationModelBuilder.DEV_SESSION_HOOK.toGACTVString()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("no hook in " + built.getDependencies()));
+    assertTrue(hook.isRuntimeCp());
+    assertTrue(built.getRuntimeDependencies().contains(hook));
+    assertFalse(hook.isReloadable());
+    assertFalse(hook.isClassLoaderParentFirst());
+    assertEquals(hookJar, hook.getResolvedPaths().getSinglePath());
+  }
+
+  @Test
+  void withoutADevSessionTheModelHasNoHook(@TempDir Path tempDir) throws Exception {
+    Path bazel = Files.createDirectories(tempDir.resolve("bazel-out/app.quarkus-classes"));
+
+    var built = ExplicitApplicationModelBuilder.build(devModel(tempDir, bazel.toString()));
+
+    assertTrue(
+        built.getDependencies().stream()
+            .noneMatch(
+                dependency ->
+                    dependency
+                        .toGACTVString()
+                        .equals(ExplicitApplicationModelBuilder.DEV_SESSION_HOOK.toGACTVString())));
+    assertEquals(bazel.toRealPath(), built.getAppArtifact().getResolvedPaths().getSinglePath());
   }
 }

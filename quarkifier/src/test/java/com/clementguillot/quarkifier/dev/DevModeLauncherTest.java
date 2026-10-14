@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.clementguillot.quarkifier.QuarkifierConfig;
 import com.clementguillot.quarkifier.TestQuarkifierConfig;
+import com.clementguillot.quarkifier.devhook.GenerationSwitch;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
@@ -309,7 +310,8 @@ class DevModeLauncherTest {
     var config = devConfig("--core-deployment-classpath", core + ":" + agentJar);
 
     List<String> cmd =
-        DevModeLauncher.devProcessCommand(config, Path.of("model.dat"), Path.of("dev.jar"));
+        DevModeLauncher.devProcessCommand(
+            config, Path.of("model.dat"), Path.of("dev.jar"), Path.of("/session"));
 
     String agent = "-javaagent:" + agentJar;
     assertTrue(cmd.contains(agent), cmd::toString);
@@ -323,9 +325,24 @@ class DevModeLauncherTest {
     var config = devConfig("--core-deployment-classpath", core.toString());
 
     List<String> cmd =
-        DevModeLauncher.devProcessCommand(config, Path.of("model.dat"), Path.of("dev.jar"));
+        DevModeLauncher.devProcessCommand(
+            config, Path.of("model.dat"), Path.of("dev.jar"), Path.of("/session"));
 
     assertTrue(cmd.stream().noneMatch(arg -> arg.startsWith("-javaagent:")), cmd::toString);
+  }
+
+  @Test
+  void devProcessCommand_namesTheDevSessionToItsHook(@TempDir Path tempDir) throws Exception {
+    Path core = deploymentJar(tempDir, "quarkus-core-deployment");
+    var config = devConfig("--core-deployment-classpath", core.toString());
+
+    List<String> cmd =
+        DevModeLauncher.devProcessCommand(
+            config, Path.of("model.dat"), Path.of("dev.jar"), Path.of("/session"));
+
+    String property = "-D" + GenerationSwitch.SESSION_PROPERTY + "=/session";
+    assertTrue(cmd.contains(property), cmd::toString);
+    assertTrue(cmd.indexOf(property) < cmd.indexOf("-jar"), "JVM options precede -jar: " + cmd);
   }
 
   @Test

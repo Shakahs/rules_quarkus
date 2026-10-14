@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.clementguillot.quarkifier.QuarkifierConfig;
 import com.clementguillot.quarkifier.TestQuarkifierConfig;
+import com.clementguillot.quarkifier.dev.DevSession;
+import com.clementguillot.quarkifier.devhook.GenerationSwitch;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -159,5 +161,57 @@ class BazelFileWatcherTest {
 
     watcher.close();
     assertTrue(finished.await(2, TimeUnit.SECONDS), "watchLoop should exit after close()");
+  }
+
+  /** A dev config whose hot-reload "bazel build" is {@code bazelCommand}. */
+  private QuarkifierConfig buildingWith(String bazelCommand) {
+    return TestQuarkifierConfig.parse(
+        "--application-classpath", "app.jar",
+        "--application-model", "model.json",
+        "--output-dir", tempDir.resolve("output").toString(),
+        "--mode", "dev",
+        "--bazel-targets", "//pkg:lib",
+        "--workspace-dir", tempDir.toString(),
+        "--bazel-command", bazelCommand,
+        "--bazel-build-timeout-seconds", "5");
+  }
+
+  private DevSession session() throws IOException {
+    Path bazel = Files.createDirectories(tempDir.resolve("bazel-out/app"));
+    Files.writeString(bazel.resolve("App.class"), "v0");
+    return DevSession.start(
+        tempDir.resolve("session"),
+        List.of(new DevSession.Module("bazel-out/app", "000-app", bazel)));
+  }
+
+  @Test
+  void triggerBuild_publishesASuccessfulBuildToTheSession() throws Exception {
+    DevSession session = session();
+    var watcher =
+        new BazelFileWatcher(
+            buildingWith("true"), new ProjectFileMirror(java.util.Map.of()), session);
+
+    watcher.triggerBuild();
+    watcher.close();
+
+    assertEquals(
+        Path.of("gen-1"),
+        Files.readSymbolicLink(session.root().resolve(GenerationSwitch.READY)));
+  }
+
+  @Test
+  void triggerBuild_publishesNothingWhenTheBuildFails() throws Exception {
+    DevSession session = session();
+    var watcher =
+        new BazelFileWatcher(
+            buildingWith("false"), new ProjectFileMirror(java.util.Map.of()), session);
+
+    watcher.triggerBuild();
+    watcher.close();
+
+    assertEquals(
+        Path.of("gen-0"),
+        Files.readSymbolicLink(session.root().resolve(GenerationSwitch.READY)));
+    assertFalse(Files.exists(session.root().resolve("gen-1")));
   }
 }

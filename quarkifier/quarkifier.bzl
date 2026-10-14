@@ -45,6 +45,8 @@ def quarkifier_targets(minor, maven_repo):
             # Quarkus Core + deployment (contains AugmentActionImpl)
             maven_repo + "//:io_quarkus_quarkus_core",
             maven_repo + "//:io_quarkus_quarkus_core_deployment",
+            # HotReplacementSetup, which the dev session's hook implements.
+            maven_repo + "//:io_quarkus_quarkus_development_mode_spi",
             # ArC runtime — needed in the deploy jar so ASM's ClassWriter can resolve
             # types like io.quarkus.arc.impl.ParameterizedTypeImpl during augmentation.
             maven_repo + "//:io_quarkus_arc_arc",
@@ -82,7 +84,9 @@ def quarkifier_targets(minor, maven_repo):
             # CodeGenerationExecutorTest pins the CodeGenerator.initAndRun
             # signature this minor compiles against.
             maven_repo + "//:io_quarkus_quarkus_core_deployment",
+            maven_repo + "//:io_quarkus_quarkus_development_mode_spi",
             maven_repo + "//:info_picocli_picocli",
+            maven_repo + "//:org_jboss_logging_jboss_logging",
             maven_repo + "//:org_junit_jupiter_junit_jupiter",
             maven_repo + "//:org_junit_platform_junit_platform_console_standalone",
             maven_repo + "//:org_junit_platform_junit_platform_launcher",

@@ -3,7 +3,10 @@ package com.clementguillot.quarkifier.dev;
 import com.clementguillot.quarkifier.AugmentationException;
 import com.clementguillot.quarkifier.BuildProperties;
 import com.clementguillot.quarkifier.QuarkifierConfig;
+import com.clementguillot.quarkifier.devhook.GenerationSwitch;
 import com.clementguillot.quarkifier.maven.MavenCoordinateParser;
+import com.clementguillot.quarkifier.model.ExplicitApplicationModelBuilder;
+import com.clementguillot.quarkifier.model.transport.BazelApplicationModel;
 import com.clementguillot.quarkifier.watcher.BazelFileWatcher;
 import com.clementguillot.quarkifier.watcher.ProjectFileMirror;
 import io.quarkus.bootstrap.BootstrapConstants;
@@ -41,10 +44,12 @@ import org.jboss.logging.Logger;
  * augment classloader.
  *
  * <p>The boundary between Bazel and dev mode is the application model. Dev mode runs what the model
- * names, from where the model says it is: each workspace module's class path is the directory
- * Bazel built for it, read in place. Dev mode never writes there and never compiles; a source edit
- * rebuilds through Bazel ({@code BazelFileWatcher}), and Quarkus's own scan finds what the rebuild
- * rewrote.
+ * names, and every workspace module from a {@link DevSession}: the session links each successful
+ * build of the modules' Bazel directories into a generation of its own, and the application reads
+ * them through the session's {@code current} link, which {@link GenerationSwitch} moves inside
+ * Quarkus's scan. Bazel deletes an action's outputs before running it again, so the application
+ * never reads Bazel's directories themselves. Dev mode never writes into Bazel's outputs and never
+ * compiles; a source edit rebuilds through Bazel ({@code BazelFileWatcher}).
  *
  * @see <a href="../../../../../../docs/dev-mode.md">docs/dev-mode.md</a> for the full architecture
  */
@@ -60,16 +65,28 @@ public final class DevModeLauncher {
 
   private DevModeLauncher() {}
 
+  /** The dev session's directory below the output directory. */
+  private static final String SESSION_DIRECTORY = "dev-session";
+
   /**
    * Launches Quarkus dev mode in a separate JVM process.
    *
    * @param config CLI configuration including source dirs, classpath, output dir
-   * @param appModel the ApplicationModel built from classpath jars
+   * @param explicitModel the validated dev application model
    * @throws AugmentationException if dev mode fails to start
    */
-  public static void launch(QuarkifierConfig config, ApplicationModel appModel)
+  public static void launch(QuarkifierConfig config, BazelApplicationModel explicitModel)
       throws AugmentationException {
     try {
+      DevSession session =
+          DevSession.start(
+              sessionRoot(config), DevSession.modules(explicitModel, config.artifactPaths()));
+      ApplicationModel appModel =
+          ExplicitApplicationModelBuilder.build(
+              explicitModel,
+              config.artifactPaths(),
+              new ExplicitApplicationModelBuilder.DevSessionPaths(
+                  session.classPaths(), session.writeHookJar()));
       DevModeContext context = buildDevModeContext(config, appModel);
 
       // Ensure the target directory exists — Quarkus writes build-metrics.json there.
@@ -89,11 +106,10 @@ public final class DevModeLauncher {
       if (!projectFiles.isEmpty()) {
         projectFiles.mirror();
       }
-      BazelFileWatcher watcher =
-          startWatcherIfConfigured(config, projectFiles, moduleDirectories(context));
+      BazelFileWatcher watcher = startWatcherIfConfigured(config, projectFiles, session);
       Process process = null;
       try {
-        process = startDevProcess(config, serializedModel, devJar);
+        process = startDevProcess(config, serializedModel, devJar, session.root());
 
         final Process devProcess = process;
         Runtime.getRuntime()
@@ -137,10 +153,23 @@ public final class DevModeLauncher {
         config.buildProperties(), config.mainClass(), null, config.packageType());
   }
 
+  /**
+   * The session directory: inside the output directory, which the launcher creates per run and
+   * removes on exit. Generations hard-link Bazel's outputs, so it belongs on the file system of
+   * Bazel's output base; elsewhere they are copied ({@link DevSession}).
+   */
+  private static Path sessionRoot(QuarkifierConfig config) throws java.io.IOException {
+    return config.outputDir() != null
+        ? config.outputDir().toAbsolutePath().resolve(SESSION_DIRECTORY)
+        : Files.createTempDirectory("quarkus-dev-session");
+  }
+
   /** Starts the child JVM running {@link DevModeMain} from the dev jar. */
-  private static Process startDevProcess(QuarkifierConfig config, Path serializedModel, Path devJar)
+  private static Process startDevProcess(
+      QuarkifierConfig config, Path serializedModel, Path devJar, Path sessionRoot)
       throws Exception {
-    ProcessBuilder pb = new ProcessBuilder(devProcessCommand(config, serializedModel, devJar));
+    ProcessBuilder pb =
+        new ProcessBuilder(devProcessCommand(config, serializedModel, devJar, sessionRoot));
     if (config.workspaceDir() != null) {
       pb.directory(config.workspaceDir().toFile());
     }
@@ -158,10 +187,12 @@ public final class DevModeLauncher {
    * instrumentation-based reload (redefining changed classes in place of restarting the
    * application, when only method bodies changed) only when that is present and {@code
    * quarkus.live-reload.instrumentation} is enabled.
+   *
+   * <p>The session directory reaches {@link GenerationSwitch} as a system property.
    */
   // Visible for testing
   static List<String> devProcessCommand(
-      QuarkifierConfig config, Path serializedModel, Path devJar) {
+      QuarkifierConfig config, Path serializedModel, Path devJar, Path sessionRoot) {
     List<String> cmd = new ArrayList<>();
     cmd.add(System.getProperty("java.home") + "/bin/java");
     // Declared build properties come first so every launcher-owned setting
@@ -173,6 +204,7 @@ public final class DevModeLauncher {
         .map(name -> "-D" + name + "=" + buildProperties.getProperty(name))
         .forEach(cmd::add);
     cmd.add("-Djava.util.logging.manager=org.jboss.logmanager.LogManager");
+    cmd.add("-D" + GenerationSwitch.SESSION_PROPERTY + "=" + sessionRoot.toAbsolutePath());
     // Required for jboss-threads on Java 24+
     cmd.add("--add-opens");
     cmd.add("java.base/java.lang=ALL-UNNAMED");
@@ -199,16 +231,9 @@ public final class DevModeLauncher {
         && CLASS_CHANGE_AGENT_ARTIFACT_ID.equals(coords.artifactId());
   }
 
-  /** The Bazel-built directories every dev module runs from. */
-  private static List<Path> moduleDirectories(DevModeContext context) {
-    return context.getAllModules().stream()
-        .map(module -> Path.of(module.getMain().getClassesPath()))
-        .toList();
-  }
-
   /** Starts the hot-reload file watcher when there are targets to rebuild and inputs to watch. */
   private static BazelFileWatcher startWatcherIfConfigured(
-      QuarkifierConfig config, ProjectFileMirror projectFiles, List<Path> moduleDirectories)
+      QuarkifierConfig config, ProjectFileMirror projectFiles, DevSession session)
       throws Exception {
     if (config.bazelTargets().isEmpty()
         || (config.sourceDirs().isEmpty()
@@ -218,7 +243,7 @@ public final class DevModeLauncher {
       return null;
     }
     LOGGER.debug("[hot-reload] Starting file watcher...");
-    return BazelFileWatcher.startInBackground(config, projectFiles, moduleDirectories);
+    return BazelFileWatcher.startInBackground(config, projectFiles, session);
   }
 
   /**
@@ -326,7 +351,7 @@ public final class DevModeLauncher {
    * Builds a {@link DevModeContext} configured for Bazel-managed dev mode.
    *
    * <p>The modules are the model's: the application's own, and one per reloadable workspace
-   * dependency, each over the directory Bazel built for it ({@link #moduleInfo}).
+   * dependency, each over its class directory in the dev session ({@link #moduleInfo}).
    */
   static DevModeContext buildDevModeContext(QuarkifierConfig config, ApplicationModel appModel) {
     var context = new DevModeContext();
@@ -433,10 +458,11 @@ public final class DevModeLauncher {
 
   /**
    * Builds the {@link DevModeContext.ModuleInfo} of one model artifact: its class path is the
-   * directory the model resolves it to, which is the one Bazel built.
+   * directory the model resolves it to, the dev session's directory for it, which holds the files
+   * of the last build the session published.
    *
    * <p>The module declares no sources. Quarkus compiles whatever it finds under a module's sources
-   * into the module's class path, and a module's class path here is a Bazel output: Bazel owns
+   * into the module's class path, and a module's class path here holds Bazel's outputs: Bazel owns
    * every compile, and its outputs are read-only to dev mode. With no sources, Quarkus's scan
    * reads the directory and never writes to it — it neither compiles into it nor deletes a class
    * whose source it cannot find.

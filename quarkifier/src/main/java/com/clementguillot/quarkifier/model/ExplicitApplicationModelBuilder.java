@@ -61,14 +61,57 @@ public final class ExplicitApplicationModelBuilder {
    */
   public static ApplicationModel build(BazelApplicationModel model, Map<String, Path> artifactPaths)
       throws IOException {
+    return build(model, artifactPaths, DevSessionPaths.NONE);
+  }
+
+  /**
+   * Builds the dev model over a dev session's class directories.
+   *
+   * @param artifactPaths each model artifact path to the file holding it here
+   * @param devSession where the dev session holds the dev modules, and its hook jar
+   */
+  public static ApplicationModel build(
+      BazelApplicationModel model, Map<String, Path> artifactPaths, DevSessionPaths devSession)
+      throws IOException {
     BazelApplicationModelValidator.validate(model);
-    var adapter = new Adapter(model, artifactPaths);
+    var adapter = new Adapter(model, artifactPaths, devSession);
     return adapter.build();
   }
+
+  /**
+   * What a dev session changes in the model it runs.
+   *
+   * <p>The dev modules are read from the session's class directories rather than from Bazel's
+   * outputs, which a rebuild deletes. Those paths run through the session's {@code current} link,
+   * which moves to each new build, so they are kept exactly as given and never resolved to the
+   * directory behind the link.
+   *
+   * <p>The hook jar installs the session's {@code HotReplacementSetup}. It is a runtime dependency
+   * of the dev model only, so that Quarkus loads it from the base runtime class loader, the only
+   * one it discovers that service in. It belongs to the launcher, not to the application's graph:
+   * nothing in the application depends on it, and no other lifecycle has it.
+   *
+   * @param classPaths each dev module's model path to the class path the application reads it from
+   * @param hookJar the jar installing the session's scan step, or {@code null} for none
+   */
+  public record DevSessionPaths(Map<String, Path> classPaths, Path hookJar) {
+
+    /** No dev session: every artifact is read where the model says. */
+    public static final DevSessionPaths NONE = new DevSessionPaths(Map.of(), null);
+
+    public DevSessionPaths {
+      classPaths = Map.copyOf(classPaths);
+    }
+  }
+
+  /** The coordinates of the dev session's hook jar in the dev model. */
+  public static final ArtifactCoords DEV_SESSION_HOOK =
+      ArtifactCoords.jar("com.clementguillot.rules_quarkus", "dev-session-hook", "1");
 
   private static final class Adapter {
     private final BazelApplicationModel source;
     private final Map<String, Path> artifactPaths;
+    private final DevSessionPaths devSession;
     private final ApplicationModelBuilder builder = new ApplicationModelBuilder();
     private final Map<String, Node> nodes = new LinkedHashMap<>();
     private final Map<String, ResolvedDependencyBuilder> dependencies = new LinkedHashMap<>();
@@ -79,9 +122,11 @@ public final class ExplicitApplicationModelBuilder {
     private final Set<String> runtimeExtensions = new java.util.HashSet<>();
     private final Map<String, Properties> extensionDescriptors = new HashMap<>();
 
-    private Adapter(BazelApplicationModel source, Map<String, Path> artifactPaths) {
+    private Adapter(
+        BazelApplicationModel source, Map<String, Path> artifactPaths, DevSessionPaths devSession) {
       this.source = source;
       this.artifactPaths = Map.copyOf(artifactPaths);
+      this.devSession = devSession;
       for (Node node : source.nodes()) {
         nodes.put(node.id(), node);
       }
@@ -103,6 +148,17 @@ public final class ExplicitApplicationModelBuilder {
         if (!source.applicationId().equals(dependency.getKey())) {
           builder.addDependency(dependency.getValue());
         }
+      }
+      if (devSession.hookJar() != null) {
+        // A runtime dependency is on the deployment class path too: Quarkus's getDependencies(),
+        // which CuratedApplication builds the base runtime class loader from, returns only those.
+        builder.addDependency(
+            ResolvedDependencyBuilder.newInstance()
+                .setCoords(DEV_SESSION_HOOK)
+                .setScope("runtime")
+                .setRuntimeCp()
+                .setDeploymentCp()
+                .setResolvedPath(devSession.hookJar()));
       }
       ApplicationModel result = builder.build();
       validateBuiltModel(result);
@@ -212,6 +268,11 @@ public final class ExplicitApplicationModelBuilder {
     private List<Path> resolveArtifactPaths(Node node) throws IOException {
       var resolved = new ArrayList<Path>(node.paths().size());
       for (String rawPath : node.paths()) {
+        Path sessionPath = devSession.classPaths().get(rawPath);
+        if (sessionPath != null) {
+          resolved.add(sessionPath);
+          continue;
+        }
         Path path = artifactPath(rawPath);
         if (source.mode() == BazelApplicationModel.Mode.DEV
             || source.mode() == BazelApplicationModel.Mode.TEST) {
@@ -377,6 +438,10 @@ public final class ExplicitApplicationModelBuilder {
      * class's classpath root with its module's output directory by path equality.
      */
     private Path workspacePath(String rawPath) {
+      Path sessionPath = devSession.classPaths().get(rawPath);
+      if (sessionPath != null) {
+        return sessionPath;
+      }
       Path found = artifactPaths.get(rawPath);
       if (found != null) {
         try {

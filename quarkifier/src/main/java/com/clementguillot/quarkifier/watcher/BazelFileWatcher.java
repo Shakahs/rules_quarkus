@@ -1,6 +1,7 @@
 package com.clementguillot.quarkifier.watcher;
 
 import com.clementguillot.quarkifier.QuarkifierConfig;
+import com.clementguillot.quarkifier.dev.DevSession;
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.ClosedWatchServiceException;
@@ -38,10 +39,10 @@ import org.jboss.logging.Logger;
  * </ul>
  *
  * <p>Monitors the application's source and resource directories, debounces rapid edits, and invokes
- * {@code bazel build} via {@link ProcessBuilder}. That is all it does to the application: the dev
- * modules' class paths are the directories Bazel writes ({@code DevModeLauncher}), so the rebuild
- * itself is what Quarkus finds changed on its next scan. Nothing is copied out of Bazel's output
- * tree.
+ * {@code bazel build} via {@link ProcessBuilder}. After a successful build it publishes the build's
+ * class directories to the {@link DevSession}, which links them into a new generation; the dev
+ * application switches to it, and scans, on its own ({@code GenerationSwitch}). A failed build
+ * publishes nothing, so the application keeps running the last good one.
  *
  * <p>Runs as a daemon thread inside the quarkifier process in DEV mode. Implements {@link
  * Closeable} to ensure the {@link WatchService} and executor are properly released.
@@ -66,11 +67,8 @@ public final class BazelFileWatcher implements Closeable {
   /** The built outputs the application reads from its project directory, re-mirrored per build. */
   private final ProjectFileMirror projectFiles;
 
-  /**
-   * The Bazel-built directories the dev modules run from. They are only read here, to tell whether
-   * a rebuild reached them ({@link #warnIfOutputsWentStale}).
-   */
-  private final List<Path> moduleDirectories;
+  /** The dev session each successful build is published to, or {@code null} for none. */
+  private final DevSession session;
 
   /**
    * Creates a new file watcher. The {@link WatchService} is created eagerly; call {@link #close()}
@@ -92,25 +90,24 @@ public final class BazelFileWatcher implements Closeable {
    * @throws IOException if the watch service cannot be created
    */
   BazelFileWatcher(QuarkifierConfig config, ProjectFileMirror projectFiles) throws IOException {
-    this(config, projectFiles, List.of());
+    this(config, projectFiles, null);
   }
 
   /**
-   * Creates a new file watcher that re-mirrors {@code projectFiles} after every successful rebuild
-   * and warns when a rebuild reaches none of {@code moduleDirectories}.
+   * Creates a new file watcher that publishes every successful rebuild to {@code session} and then
+   * re-mirrors {@code projectFiles}.
    *
    * @param config the quarkifier configuration
    * @param projectFiles the mirror of the configuration's project files, already brought up to date
    *     by the launcher
-   * @param moduleDirectories the Bazel-built directories the dev modules run from
+   * @param session the dev session the application runs from, or {@code null} for none
    * @throws IOException if the watch service cannot be created
    */
-  BazelFileWatcher(
-      QuarkifierConfig config, ProjectFileMirror projectFiles, List<Path> moduleDirectories)
+  BazelFileWatcher(QuarkifierConfig config, ProjectFileMirror projectFiles, DevSession session)
       throws IOException {
     this.config = config;
     this.projectFiles = projectFiles;
-    this.moduleDirectories = List.copyOf(moduleDirectories);
+    this.session = session;
     this.watchService = FileSystems.getDefault().newWatchService();
     this.debounceExecutor =
         Executors.newSingleThreadScheduledExecutor(
@@ -159,23 +156,23 @@ public final class BazelFileWatcher implements Closeable {
    */
   public static BazelFileWatcher startInBackground(
       QuarkifierConfig config, ProjectFileMirror projectFiles) throws IOException {
-    return startInBackground(config, projectFiles, List.of());
+    return startInBackground(config, projectFiles, null);
   }
 
   /**
-   * Starts the file watcher in a daemon thread, re-mirroring {@code projectFiles} after every
-   * successful rebuild and warning when a rebuild reaches none of {@code moduleDirectories}.
+   * Starts the file watcher in a daemon thread, publishing every successful rebuild to {@code
+   * session} and then re-mirroring {@code projectFiles}.
    *
    * @param config the quarkifier configuration containing source dirs, Bazel targets, etc.
    * @param projectFiles the mirror of the configuration's project files
-   * @param moduleDirectories the Bazel-built directories the dev modules run from
+   * @param session the dev session the application runs from, or {@code null} for none
    * @return the watcher instance (call {@link #close()} to stop)
    * @throws IOException if the watch service cannot be created
    */
   public static BazelFileWatcher startInBackground(
-      QuarkifierConfig config, ProjectFileMirror projectFiles, List<Path> moduleDirectories)
+      QuarkifierConfig config, ProjectFileMirror projectFiles, DevSession session)
       throws IOException {
-    BazelFileWatcher watcher = new BazelFileWatcher(config, projectFiles, moduleDirectories);
+    BazelFileWatcher watcher = new BazelFileWatcher(config, projectFiles, session);
     try {
       watcher.registerWatchers(config.sourceDirs());
       watcher.registerWatchers(config.watchDirs());
@@ -391,8 +388,9 @@ public final class BazelFileWatcher implements Closeable {
    * build} runs at a time. If a build is already in progress, the request is queued and drained
    * after the current build completes.
    *
-   * <p>A successful build has already updated what the application runs: the dev modules' class
-   * paths are the directories the build writes. Only the project files are mirrored afterwards.
+   * <p>A successful build is published to the dev session, which the application switches to on
+   * its next scan and scans for at once; the project files are mirrored afterwards. Builds run one
+   * at a time, so nothing is writing Bazel's outputs while they are linked into a generation.
    */
   void triggerBuild() {
     if (buildInProgress.compareAndSet(false, true)) {
@@ -405,6 +403,7 @@ public final class BazelFileWatcher implements Closeable {
 
           if (success) {
             warnIfOutputsWentStale(start);
+            publishToSession();
             mirrorProjectFiles();
             LOGGER.debugf("[hot-reload] Build successful (%dms)", elapsed);
           } else {
@@ -500,11 +499,11 @@ public final class BazelFileWatcher implements Closeable {
    * @param buildStartMillis wall-clock time at which the rebuild was started
    */
   private void warnIfOutputsWentStale(long buildStartMillis) {
-    if (moduleDirectories.isEmpty() || staleOutputsWarned.get()) {
+    if (session == null || staleOutputsWarned.get()) {
       return;
     }
     long threshold = buildStartMillis - 2000; // slack for coarse mtime granularity
-    for (Path directory : moduleDirectories) {
+    for (Path directory : session.bazelDirectories()) {
       try {
         if (Files.getLastModifiedTime(directory).toMillis() >= threshold) {
           return; // the rebuild reached at least one module
@@ -534,6 +533,20 @@ public final class BazelFileWatcher implements Closeable {
           String.join(System.lineSeparator(), lines.subList(from, lines.size())));
     } catch (IOException e) {
       LOGGER.debugf("[hot-reload] Could not read bazel log %s: %s", bazelLogPath, e.getMessage());
+    }
+  }
+
+  /** Links the outputs the rebuild just refreshed into a new generation of the dev session. */
+  private void publishToSession() {
+    if (session == null) {
+      return;
+    }
+    try {
+      session.publish();
+      LOGGER.debug("[hot-reload] Build published to the dev session");
+    } catch (IOException e) {
+      LOGGER.errorf(
+          e, "[hot-reload] Failed to publish the build; the application keeps the previous one");
     }
   }
 
