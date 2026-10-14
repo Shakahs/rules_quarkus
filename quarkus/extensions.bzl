@@ -235,21 +235,6 @@ def _write_platform_catalog(rctx):
 runtime_catalog_for_test = _runtime_catalog
 maven_target_name_for_test = _maven_target_name
 
-def _maven_relative_path(jar_path):
-    """Returns the jar path relative to its Maven repository root.
-
-    Preserving the Maven directory structure (group/artifact/version/file) in
-    the copied deployment jars is required for Dev UI version extraction.
-    Download paths may contain a "maven2" component; everything after it is
-    the Maven-layout path. Falls back to the bare file name.
-    """
-    parts = jar_path.replace("\\", "/").split("/")
-    if "maven2" in parts:
-        maven2_idx = parts.index("maven2")
-        if maven2_idx + 1 < len(parts):
-            return "/".join(parts[maven2_idx + 1:])
-    return parts[-1]
-
 def _jar_target_name(relative_jar_path):
     """Derives the java_import target name from the Maven-relative jar path.
 
@@ -272,57 +257,29 @@ def _jar_target_name(relative_jar_path):
 
 jar_target_name_for_test = _jar_target_name
 
-def _copy_jars_into_repo(rctx, copies):
-    """Copies resolved jars into the repository directory.
-
-    The repository must own its files: symlinks into an external downloader
-    cache can dangle when the cache is cleaned (with no repository
-    invalidation to recover), and later cache mutations change action inputs
-    underneath Bazel — a remote-cache poisoning vector. Copying snapshots the
-    checksum-verified Maven download into the generated repository.
-
-    Args:
-        rctx: Repository context.
-        copies: List of (source path, repo-relative destination) tuples.
-    """
-    if not copies:
-        return
-    rctx.report_progress("Copying deployment jars into the repository")
-
-    # One mkdir for all parent directories (small argv), then one cp per jar
-    # (batching all jars into a single argv could exceed the kernel limits).
-    dest_dirs = {dest.rsplit("/", 1)[0]: True for _, dest in copies}
-    result = rctx.execute(["mkdir", "-p"] + list(dest_dirs.keys()))
-    if result.return_code != 0:
-        fail("Failed to create deployment jar directories: " + result.stderr)
-    for src, dest in copies:
-        result = rctx.execute(["cp", src, dest])
-        if result.return_code != 0:
-            fail("Failed to copy deployment jar {} to {}: {}".format(src, dest, result.stderr))
-
 def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifacts = []):
-    """Copies resolved jars into subdir/ and writes a BUILD file with java_import targets.
+    """Downloads resolved jars into subdir/ and writes a BUILD file with java_import targets.
 
     Args:
         rctx: Repository context.
         subdir: Destination subdirectory (e.g. "deployment", "conditional").
-        all_jars: Iterable of absolute jar paths to materialize.
-        core_jar_set: Optional dict of jar paths that form the "core" subset.
+        all_jars: Iterable of _locked_artifact structs for JARs to materialize.
+        core_jar_set: Optional dict of relative_paths that form the "core" subset.
             When provided an extra java_library(name = "core") is emitted.
-        extra_artifacts: Non-JAR resolved artifacts to copy and expose through
+        extra_artifacts: Non-JAR _locked_artifact structs to download and expose through
             the generated artifacts filegroup.
 
     Returns:
-        Dict mapping original jar path → repo-relative path.
+        Dict mapping artifact relative_path → repo-relative path.
     """
     imports = []
     all_targets = []
     core_targets = []
-    copies = []
+    downloads = []
     repo_paths = {}
     seen = {}
-    for jar_path in all_jars:
-        relative_jar_path = _maven_relative_path(jar_path)
+    for artifact in all_jars:
+        relative_jar_path = artifact.relative_path
         target_name = _jar_target_name(relative_jar_path)
         jar_repo_path = "jars/" + relative_jar_path
 
@@ -335,7 +292,7 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
                    "({}); keeping both, this one as '{}_dup{}'.").format(
                 subdir,
                 target_name,
-                jar_path,
+                relative_jar_path,
                 target_name,
                 n,
             ))
@@ -344,20 +301,21 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
         else:
             seen[target_name] = 1
 
-        copies.append((jar_path, subdir + "/" + jar_repo_path))
-        repo_paths[jar_path] = subdir + "/" + jar_repo_path
+        dest_path = subdir + "/" + jar_repo_path
+        downloads.append(struct(output = dest_path, sha256 = artifact.sha256, url = artifact.url))
+        repo_paths[relative_jar_path] = dest_path
 
         imports.append(
             'java_import(name = "{n}", jars = ["{j}"], visibility = ["//visibility:public"])'.format(n = target_name, j = jar_repo_path),
         )
         all_targets.append('":{}"'.format(target_name))
-        if core_jar_set and jar_path in core_jar_set:
+        if core_jar_set and relative_jar_path in core_jar_set:
             core_targets.append('":{}"'.format(target_name))
 
     artifact_files = []
     seen_artifact_paths = {}
-    for artifact_path in extra_artifacts:
-        relative_path = _maven_relative_path(artifact_path)
+    for artifact in extra_artifacts:
+        relative_path = artifact.relative_path
         repo_path = "artifacts/" + relative_path
         if relative_path in seen_artifact_paths:
             seen_artifact_paths[relative_path] += 1
@@ -368,17 +326,18 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
                    "({}); keeping both, this one under 'dup{}'.").format(
                 subdir,
                 relative_path,
-                artifact_path,
+                relative_path,
                 n,
             ))
             repo_path = "artifacts/dup{}/{}".format(n, relative_path)
         else:
             seen_artifact_paths[relative_path] = 1
-        copies.append((artifact_path, subdir + "/" + repo_path))
-        repo_paths[artifact_path] = subdir + "/" + repo_path
+        dest_path = subdir + "/" + repo_path
+        downloads.append(struct(output = dest_path, sha256 = artifact.sha256, url = artifact.url))
+        repo_paths[relative_path] = dest_path
         artifact_files.append('":{}"'.format(repo_path))
 
-    _copy_jars_into_repo(rctx, copies)
+    _download_locked_artifacts(rctx, downloads)
 
     libraries = [
         'java_library(name = "all", exports = [{}])'.format(", ".join(all_targets)),
@@ -973,6 +932,7 @@ def _locked_artifact(rctx, lock_data, node, output_root):
     )
     return struct(
         output = output_root + "/" + relative_path,
+        relative_path = relative_path,
         sha256 = shasums[sha_key],
         url = [repository.removesuffix("/") + "/" + relative_path for repository in rctx.attr.artifact_repositories],
     )
@@ -1002,6 +962,19 @@ def _download_locked_artifacts(rctx, artifacts):
 # scan uses while keeping the downloader busy.
 _DESCRIPTOR_SCAN_BATCH = 64
 
+_EXTRACT_DESCRIPTORS_PY = """\
+import os, sys, zipfile
+entry = "META-INF/quarkus-extension.properties"
+out_root = sys.argv[1]
+for idx, jar_path in enumerate(sys.argv[2:]):
+    with zipfile.ZipFile(jar_path) as zf:
+        if entry in zf.namelist():
+            dest = os.path.join(out_root, str(idx), entry)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(zf.read(entry))
+"""
+
 def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
     """Reads Quarkus descriptors from every Maven-locked runtime artifact the direct ones reach.
 
@@ -1025,22 +998,30 @@ def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
     jars = [
         indexes.by_key[key]
         for key in sorted(_closure(direct_artifacts, indexes.by_key).keys())
-        if indexes.by_key[key]["coordinates"]["type"] in ["jar", "bundle", "test-jar"]
+        if indexes.by_key[key]["coordinates"]["type"] in ["jar", "bundle", "test-jar"] and
+           "_sjs1_" not in indexes.by_key[key]["coordinates"]["artifactId"]
     ]
+    python3 = rctx.which("python3")
     for start in range(0, len(jars), _DESCRIPTOR_SCAN_BATCH):
         batch = jars[start:start + _DESCRIPTOR_SCAN_BATCH]
         paths = _download_locked_artifacts(rctx, [
             _locked_artifact(rctx, lock_data, node, "descriptor-artifacts")
             for node in batch
         ])
+        if python3 != None:
+            result = rctx.execute([python3, "-c", _EXTRACT_DESCRIPTORS_PY, "descriptor-scan"] + paths)
+            if result.return_code != 0:
+                fail("Failed to scan Quarkus extension descriptors: " + result.stderr)
         for offset in range(len(batch)):
             node = batch[offset]
             artifact = paths[offset]
-            output = "descriptor-scan/{}".format(start + offset)
-            rctx.extract(artifact, output)
+            output = "descriptor-scan/{}".format(offset)
+            if python3 == None:
+                rctx.extract(artifact, output)
             descriptor_path = rctx.path(output + "/META-INF/quarkus-extension.properties")
             props = _properties(rctx.read(descriptor_path)) if descriptor_path.exists else None
-            rctx.delete(output)
+            if python3 == None:
+                rctx.delete(output)
             if props == None:
                 continue
             deployment = props.get("deployment-artifact", "").strip()
@@ -1058,8 +1039,11 @@ def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
             if previous != None and previous != descriptor:
                 fail("Runtime artifact '{}' has conflicting extension descriptors".format(runtime))
             descriptors[runtime] = descriptor
+        if python3 != None:
+            rctx.delete("descriptor-scan")
         for artifact in paths:
             rctx.delete(artifact)
+    rctx.delete("descriptor-artifacts")
     return [descriptors[key] for key in sorted(descriptors)]
 
 def _catalog_indexes(catalog):
@@ -1187,13 +1171,9 @@ def _materialize_locked_maven_graph(rctx):
     selected_keys = dict(deployment_selected)
     selected_keys.update(conditional_selected)
     selected_nodes = [indexes.by_key[key] for key in sorted(selected_keys)]
-    paths = _download_locked_artifacts(rctx, [
-        _locked_artifact(rctx, lock_data, node, "locked-artifacts")
-        for node in selected_nodes
-    ])
     files = {
-        _canonical_coordinate(selected_nodes[index]["coordinates"]): paths[index]
-        for index in range(len(selected_nodes))
+        _canonical_coordinate(node["coordinates"]): _locked_artifact(rctx, lock_data, node, "locked-artifacts")
+        for node in selected_nodes
     }
 
     deployment_jars = []
@@ -1201,36 +1181,36 @@ def _materialize_locked_maven_graph(rctx):
     core_paths = {}
     for key in sorted(deployment_selected):
         coordinate = _canonical_coordinate(indexes.by_key[key]["coordinates"])
-        path = files.get(coordinate)
-        if path == None:
+        artifact = files.get(coordinate)
+        if artifact == None:
             fail("Maven lock artifact '{}' has no Bazel file label".format(coordinate))
-        if path.endswith(".jar"):
-            deployment_jars.append(path)
+        if artifact.relative_path.endswith(".jar"):
+            deployment_jars.append(artifact)
         else:
-            deployment_artifacts.append(path)
+            deployment_artifacts.append(artifact)
         if key in core_selected:
-            core_paths[path] = True
+            core_paths[artifact.relative_path] = True
 
     conditional_jars = []
     for key in sorted(conditional_selected):
         coordinate = _canonical_coordinate(indexes.by_key[key]["coordinates"])
-        path = files.get(coordinate)
-        if path == None:
+        artifact = files.get(coordinate)
+        if artifact == None:
             fail("Maven lock artifact '{}' has no Bazel file label".format(coordinate))
-        if path.endswith(".jar"):
-            conditional_jars.append(path)
+        if artifact.relative_path.endswith(".jar"):
+            conditional_jars.append(artifact)
 
     conditional_repo_paths_by_file = _write_conditional_build(rctx, conditional_jars)
     deployment_repo_paths_by_file = _write_deployment_build(rctx, deployment_jars, core_paths, deployment_artifacts)
     deployment_repo_paths = {
-        coordinate: deployment_repo_paths_by_file[path]
-        for coordinate, path in files.items()
-        if path in deployment_repo_paths_by_file
+        coordinate: deployment_repo_paths_by_file[artifact.relative_path]
+        for coordinate, artifact in files.items()
+        if artifact.relative_path in deployment_repo_paths_by_file
     }
     conditional_repo_paths = {
-        coordinate: conditional_repo_paths_by_file[path]
-        for coordinate, path in files.items()
-        if path in conditional_repo_paths_by_file
+        coordinate: conditional_repo_paths_by_file[artifact.relative_path]
+        for coordinate, artifact in files.items()
+        if artifact.relative_path in conditional_repo_paths_by_file
     }
 
     deployment_catalog = {
