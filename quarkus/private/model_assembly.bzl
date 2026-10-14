@@ -1,7 +1,7 @@
 "Hermetic action that assembles the explicit Bazel application model."
 
 load("@rules_java//java/common:java_common.bzl", "java_common")
-load("//quarkus/private:application_model_aspect.bzl", "collect_deployment_model_artifacts", "collect_deployment_model_fragments", "collect_local_deployments", "collect_local_runtime_aliases", "collect_model_artifacts", "collect_model_fragments", "write_model_roots_file")
+load("//quarkus/private:application_model_aspect.bzl", "collect_deployment_model_fragments", "collect_local_deployments", "collect_local_runtime_aliases", "collect_model_fragments", "write_model_roots_file")
 load("//quarkus/private:versions.bzl", "RULES_VERSION")
 
 _DEPLOYMENT_PATH_MARKERS = ["deployment/jars/", "deployment/artifacts/"]
@@ -73,16 +73,14 @@ def _write_local_runtime_aliases(ctx, aliases):
     ctx.actions.write(output = output, content = "\n".join(lines) + ("\n" if lines else ""))
     return output
 
-def _run_model_assembly(ctx, roots, fragments, model_artifacts, deployment_fragments, deployment_model_artifacts, local_deployments, local_runtime_aliases, runtime_classpath, conditional_classpath, deployment_classpath, mode, application_name = None):
+def _run_model_assembly(ctx, roots, fragments, deployment_fragments, local_deployments, local_runtime_aliases, runtime_classpath, conditional_classpath, deployment_classpath, mode, application_name = None):
     """Assembles a canonical model without changing the public rule API.
 
     Args:
         ctx: Rule context for the application target.
         roots: File containing the ordered direct dependency target ids.
         fragments: Depset of runtime target model fragments.
-        model_artifacts: Depset of artifacts referenced by runtime fragments.
         deployment_fragments: Depset of local-extension deployment model fragments.
-        deployment_model_artifacts: Depset of artifacts referenced by deployment fragments.
         local_deployments: Local extension deployment coordinate-to-target mappings.
         local_runtime_aliases: Raw-to-packaged local extension runtime target mappings.
         runtime_classpath: Depset of runtime classpath artifacts.
@@ -95,7 +93,6 @@ def _run_model_assembly(ctx, roots, fragments, model_artifacts, deployment_fragm
         The declared canonical application-model JSON file.
     """
     all_fragments = depset(transitive = [fragments, deployment_fragments])
-    all_model_artifacts = depset(transitive = [model_artifacts, deployment_model_artifacts])
     fragment_manifest = _write_path_lines(
         ctx,
         ".quarkus-target-fragments-v1.txt",
@@ -163,7 +160,7 @@ def _run_model_assembly(ctx, roots, fragments, model_artifacts, deployment_fragm
                 local_deployments_file,
                 local_runtime_aliases_file,
             ],
-            transitive = [all_fragments, all_model_artifacts, runtime_classpath, conditional_classpath, deployment_classpath, depset(ctx.files.deployment_artifacts), depset(ctx.files.platform_properties), java_runtime.files],
+            transitive = [all_fragments, runtime_classpath, depset(ctx.files.platform_properties), java_runtime.files],
         ),
         outputs = [output],
         mnemonic = "QuarkusModelAssembly",
@@ -192,9 +189,7 @@ def assemble_application_model(ctx, deps, runtime_classpath, conditional_classpa
         ctx,
         roots,
         fragments,
-        collect_model_artifacts(deps),
         collect_deployment_model_fragments(deps),
-        collect_deployment_model_artifacts(deps),
         collect_local_deployments(deps),
         collect_local_runtime_aliases(deps),
         runtime_classpath,
