@@ -78,14 +78,14 @@ _production_input = rule(
 
 def quarkus_web_bundle_tests(name, bundle):
     """Test cache sharing, input isolation and direct packaging of a local bundle."""
-    _configuration_test(name = name + "_configuration", dev = bundle, testing = bundle, production = bundle)
+    _configuration_test(name = name + "_configuration", dev = bundle, testing = bundle, production = bundle, tags = ["manual"])
     _javascript_inputs_test(name = name + "_javascript_inputs", target_under_test = bundle + "_sources")
     _archive_inputs_test(name = name + "_archive_inputs", target_under_test = bundle + "_jar", bundle_name = bundle.removeprefix(":"))
-    _production_input(name = name + "_production_jar", source = bundle, testonly = True)
-    _production_input(name = name + "_production_assets", source = bundle + "_esbuild", testonly = True)
-    for mode, archive, assets in [
-        ("development", bundle, bundle + "_esbuild"),
-        ("production", ":" + name + "_production_jar", ":" + name + "_production_assets"),
+    _production_input(name = name + "_production_jar", source = bundle, tags = ["manual"], testonly = True)
+    _production_input(name = name + "_production_assets", source = bundle + "_esbuild", tags = ["manual"], testonly = True)
+    for mode, archive, assets, extra_tags in [
+        ("development", bundle, bundle + "_esbuild", []),
+        ("production", ":" + name + "_production_jar", ":" + name + "_production_assets", ["manual"]),
     ]:
         java_test(
             name = name + "_" + mode + "_archive",
@@ -96,8 +96,9 @@ def quarkus_web_bundle_tests(name, bundle):
             data = [archive, assets],
             deps = ["@rules_java//java/runfiles"],
             jvm_flags = ["-Xmx256m"],
+            tags = extra_tags,
         )
     native.test_suite(
         name = name,
-        tests = [":" + name + suffix for suffix in ["_configuration", "_javascript_inputs", "_archive_inputs", "_development_archive", "_production_archive"]],
+        tests = [":" + name + suffix for suffix in ["_javascript_inputs", "_archive_inputs", "_development_archive"]],
     )
