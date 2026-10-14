@@ -17,7 +17,8 @@ The result is a normal `JavaInfo` dependency for application and browser-test
 rules. All lifecycles consume the same resource layout and bundling pipeline.
 Bundling is selected by Bazel's `compilation_mode`: `opt` uses production
 `NODE_ENV`, minification, and the consumer's optimized browser link; `fastbuild`
-and `dbg` use development flags and the development link. Production Quarkus
+and `dbg` use development flags and the development link. `minify = True` minifies
+the JS and CSS in every mode, without changing `NODE_ENV` or the link. Production Quarkus
 packaging rules enforce `opt` through an incoming configuration transition.
 Dev and tests share the development bundle, with one cached action per set of
 inputs and compilation mode. Frontend inputs are declared: an edit rebuilds the

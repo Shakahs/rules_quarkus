@@ -40,7 +40,7 @@ _frontend_library = rule(
     },
 )
 
-def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linked_module_roots, node_modules, tailwind, html, external = [], visibility = None):
+def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linked_module_roots, node_modules, tailwind, html, external = [], minify = None, visibility = None):
     """Build Tailwind/ES modules once and export a JavaInfo resource archive.
 
     Args:
@@ -54,9 +54,17 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
         tailwind: Hermetic js_binary for the Tailwind CLI.
         html: HTML shell containing <!-- bazel:web-assets -->.
         external: Optional runtime imports left external, such as guarded Node-only fallbacks.
+        minify: Whether esbuild and Tailwind minify their output in every compilation mode.
+            Unset, they minify only in `opt`.
         visibility: Visibility of the resulting resource library.
     """
     production = Label("//quarkus/web:production")
+    if minify == None:
+        minify_js = select({production: True, "//conditions:default": False})
+        minify_css = select({production: ["--minify"], "//conditions:default": []})
+    else:
+        minify_js = minify
+        minify_css = ["--minify"] if minify else []
     stage = name + "_sources"
     copy_to_directory(
         name = stage,
@@ -98,7 +106,7 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
         args = [
             "--input", "$(execpath :" + css_entry + ")",
             "--output", "$(execpath :" + css + ")",
-        ] + select({production: ["--minify"], "//conditions:default": []}),
+        ] + minify_css,
         mnemonic = "QuarkusTailwind",
     )
     entry = name + "_entry.js"
@@ -120,7 +128,7 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
         splitting = True,
         format = "esm",
         target = ["es2022"],
-        minify = select({production: True, "//conditions:default": False}),
+        minify = minify_js,
         sourcemap = False,
         define = select({
             production: {"process.env.NODE_ENV": "\"production\""},
