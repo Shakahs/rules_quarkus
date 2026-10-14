@@ -16,7 +16,7 @@ load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "write_build_properties")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_resource_dir_paths", "collect_runtime_classpath", "collect_source_dir_paths", "collect_watch_dir_paths", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
-load("//quarkus/private:coverage_transition.bzl", "dev_lifecycle_transition", "disable_coverage_transition", "single_transitioned_target")
+load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
 load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
 load("//quarkus/private:quarkus_codegen_impl.bzl", "collect_codegen_input_dirs", "quarkus_codegen_metadata_aspect")
 
@@ -208,7 +208,7 @@ quarkus_dev_rule = rule(
         ),
         "deps": attr.label_list(
             mandatory = True,
-            cfg = dev_lifecycle_transition,
+            cfg = disable_coverage_transition,
             aspects = [
                 quarkus_extension_deployment_classpath_aspect,
                 quarkus_application_model_aspect,
@@ -229,7 +229,7 @@ exactly as a change to a derived source root does.
         ),
         "dev_project_files": attr.label_keyed_string_dict(
             allow_files = True,
-            cfg = dev_lifecycle_transition,
+            cfg = disable_coverage_transition,
             doc = """\
 Built files the application reads from its project directory rather than its
 classpath, keyed by target and valued by the workspace-relative directory each
