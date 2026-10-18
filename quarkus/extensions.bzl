@@ -898,6 +898,13 @@ def _host_maven_classifier(os, available):
     candidate = os_name + "-" + cpu
     return candidate if candidate in available else None
 
+def _has_locked_file(lock_data, node):
+    """Whether the Maven lock records a file for a node: a POM-only artifact, which aggregates others, has none."""
+    fields = node["coordinates"]
+    artifacts = lock_data["artifacts"]
+    artifact = artifacts.get(node["coordinateKey"]) or artifacts.get(fields["groupId"] + ":" + fields["artifactId"])
+    return artifact != None and any([sha != None for sha in artifact.get("shasums", {}).values()])
+
 def _locked_artifact(rctx, lock_data, node, output_root):
     """Where one exact Maven-lock artifact is downloaded from and to, and its checksum."""
     fields = node["coordinates"]
@@ -999,7 +1006,8 @@ def _scan_locked_descriptors(rctx, lock_data, indexes, direct_artifacts):
         indexes.by_key[key]
         for key in sorted(_closure(direct_artifacts, indexes.by_key).keys())
         if indexes.by_key[key]["coordinates"]["type"] in ["jar", "bundle", "test-jar"] and
-           "_sjs1_" not in indexes.by_key[key]["coordinates"]["artifactId"]
+           "_sjs1_" not in indexes.by_key[key]["coordinates"]["artifactId"] and
+           _has_locked_file(lock_data, indexes.by_key[key])
     ]
     python3 = rctx.which("python3")
     for start in range(0, len(jars), _DESCRIPTOR_SCAN_BATCH):
