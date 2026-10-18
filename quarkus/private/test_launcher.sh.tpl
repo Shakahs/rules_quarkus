@@ -11,6 +11,12 @@ if [ -z "${RUNFILES_DIR:-}" ]; then
 fi
 
 WORKSPACE_DIR="${RUNFILES_DIR}/%{workspace}"
+
+# The declared environment variables that name `data` labels' runfiles paths. Bazel exports them
+# relative to the runfiles tree, where a test starts; the JVM below runs from a project directory
+# of its own, so they are exported again with those paths absolute.
+%{runfiles_env}
+
 TOOL_JAR="${WORKSPACE_DIR}/%{tool_jar}"
 JAVA="${WORKSPACE_DIR}/%{java_home}/bin/java"
 MODEL_FILE="${WORKSPACE_DIR}/%{model_file}"

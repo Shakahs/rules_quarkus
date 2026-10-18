@@ -183,6 +183,34 @@ def _write_artifact_paths_file(ctx, files):
     ctx.actions.write(output = output, content = "\n".join(lines) + "\n")
     return output
 
+def _test_environment(ctx):
+    """The declared environment, and the launcher's exports of its values that name runfiles.
+
+    A `$(rootpath <label>)` or `$(location <label>)` of a `data` label in a value is that label's
+    runfiles path. Bazel exports it relative to the runfiles tree, where a test starts, but the
+    test JVM runs from a project directory of its own, so the launcher exports each such value
+    again with every path made absolute. Other expressions are refused.
+    """
+    environment = {}
+    exports = []
+    for name, value in ctx.attr.env.items():
+        if "$(" not in value:
+            environment[name] = value
+            continue
+        parts = value.split("$(")
+        words = [shell.quote(parts[0])]
+        for part in parts[1:]:
+            end = part.find(")")
+            expression = part[:end]
+            if end < 0 or not (expression.startswith("rootpath ") or expression.startswith("location ")):
+                fail("env '{}' of '{}': only `$(rootpath <label>)` and `$(location <label>)` of `data` labels are expanded".format(name, ctx.label))
+            path = ctx.expand_location("$(" + expression + ")", ctx.attr.data)
+            words.append('"${WORKSPACE_DIR}"/' + shell.quote(path))
+            words.append(shell.quote(part[end + 1:]))
+        environment[name] = ctx.expand_location(value, ctx.attr.data)
+        exports.append("export {}={}".format(name, "".join(words)))
+    return environment, exports
+
 def _test_impl(ctx, integration):
     if not ctx.attr.deps:
         rule_name = "quarkus_integration_test" if integration else "quarkus_test"
@@ -229,6 +257,7 @@ def _test_impl(ctx, integration):
         coverage_files.append(jacoco_runner)
 
     integration_artifact = _integration_artifact(ctx) if integration else None
+    environment, runfiles_env = _test_environment(ctx)
     launcher = ctx.actions.declare_file(ctx.label.name + "_test.sh")
     ctx.actions.expand_template(
         template = ctx.file._launcher_template,
@@ -249,6 +278,7 @@ def _test_impl(ctx, integration):
             "%{model_file}": model.short_path,
             "%{jacoco_runner}": jacoco_runner_path,
             "%{quarkus_jacoco_present}": "true" if _quarkus_jacoco_present(integration, has_maven_artifact(ctx.attr.deps, "io.quarkus", "quarkus-jacoco")) else "false",
+            "%{runfiles_env}": "\n".join(runfiles_env),
             "%{test_args}": _build_test_args(ctx.attr.test_packages, ctx.attr.test_classes, ctx.attr.fail_if_no_tests, integration),
             "%{test_kind}": "integration" if integration else "quarkus",
             "%{tool_jar}": tool_jar.short_path,
@@ -277,7 +307,7 @@ def _test_impl(ctx, integration):
         DefaultInfo(executable = launcher, runfiles = runfiles),
         OutputGroupInfo(quarkus_model = depset([model])),
         RunEnvironmentInfo(
-            environment = ctx.attr.env,
+            environment = environment,
             inherited_environment = [],
         ),
     ]
@@ -312,7 +342,7 @@ def _test_attrs(integration = False):
         ),
         "deployment_artifacts": attr.label(mandatory = True),
         "env": attr.string_dict(
-            doc = "Declared environment variables for the test process. Values are exported by the launcher, so sandboxed browser and native helpers receive them.",
+            doc = "Declared environment variables for the test process. Values are exported by the launcher, so sandboxed browser and native helpers receive them. A `$(rootpath <label>)` or `$(location <label>)` of a `data` label in a value is that label's absolute runfiles path, as the test JVM, which runs from a project directory of its own, needs it.",
         ),
         "platform_catalog": attr.label(
             allow_single_file = [".json"],
