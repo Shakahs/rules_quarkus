@@ -183,6 +183,11 @@ if [ ! -f "$MODEL_DIR/test-app-model.dat" ]; then
   echo "ERROR: test-app-model.dat was not generated" >&2
   exit 1
 fi
+if [ ! -f "$MODEL_DIR/test-app-roots.txt" ]; then
+  rm -f "$MODEL_APP_CP_FILE" "$DIRECT_JARS_FILE" "$COVERAGE_JARS_FILE"
+  echo "ERROR: test-app-roots.txt was not generated" >&2
+  exit 1
+fi
 # AppMakerHelper derives both project discovery and its writable build target
 # from the JVM working directory. Bazel source/runfile trees are read-only, so
 # provide an action-local Maven-layout root. The serialized model continues to
@@ -278,8 +283,14 @@ if [ "$TEST_KIND" = "integration" ]; then
     printf 'path=%s\n' "$ARTIFACT_PATH"
   } > "$ARTIFACT_METADATA_DIR/quarkus-artifact.properties"
 
+  # @QuarkusIntegrationTest still augments the application in this JVM, to start its Dev
+  # Services, and roots that augmentation at the test classes and OUTPUT_SOURCES_DIR alone, never
+  # at the serialized model's application artifact as @QuarkusTest does. The quarkifier wrote
+  # that artifact's paths for it. A @QuarkusTest must not get them: it already has them from the
+  # model, and a second copy duplicates every application class in the index.
   TEST_JVM_ARGS+=(
     "-Dbuild.output.directory=${ARTIFACT_METADATA_DIR}"
+    "-DOUTPUT_SOURCES_DIR=$(cat "$MODEL_DIR/test-app-roots.txt")"
     "-Dquarkus.http.test-port=0"
     "-Dquarkus.http.test-ssl-port=0"
   )

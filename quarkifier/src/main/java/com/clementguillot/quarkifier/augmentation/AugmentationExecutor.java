@@ -21,6 +21,7 @@ import java.lang.reflect.Constructor;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
@@ -65,7 +66,10 @@ public final class AugmentationExecutor {
       switch (config.mode()) {
           // TEST: serialize the ApplicationModel for use by QuarkusTestExtension.
           // No augmentation is run — the test JVM handles that via QuarkusBootstrap.Mode.TEST.
-        case TEST -> serializeTestModel(outputDir, appModel);
+        case TEST -> {
+          serializeTestModel(outputDir, appModel);
+          writeTestApplicationRoots(outputDir, appModel);
+        }
         case NATIVE -> {
           Path stagingDir = createAugmentationStagingDirectory();
           Path stagingTarget = stagingDir.resolve("target");
@@ -192,6 +196,33 @@ public final class AugmentationExecutor {
       Files.copy(serializedModel, modelFile, StandardCopyOption.REPLACE_EXISTING);
       Files.deleteIfExists(serializedModel);
     }
+  }
+
+  /**
+   * Writes the application artifact's paths, comma-separated, to {@code
+   * <output-dir>/test-app-roots.txt}.
+   *
+   * <p>{@code @QuarkusTest} takes its application roots from the serialized model ({@code
+   * AppMakerHelper} adds the application artifact's content roots). {@code
+   * IntegrationTestUtil.handleDevServices}, which augments the application in the test JVM to
+   * start its Dev Services for {@code @QuarkusIntegrationTest}, does not: it roots the
+   * application at the test class location and the directories of the {@code OUTPUT_SOURCES_DIR}
+   * system property alone, which is comma-separated. Without these, that augmentation sees none
+   * of the application's own classes or resources, and fails on whatever needs them, such as a
+   * Qute template an endpoint injects.
+   */
+  static void writeTestApplicationRoots(Path outputDir, ApplicationModel appModel)
+      throws Exception {
+    List<String> roots = new ArrayList<>();
+    for (Path root : appModel.getAppArtifact().getResolvedPaths()) {
+      String path = root.toAbsolutePath().normalize().toString();
+      if (path.contains(",")) {
+        throw new AugmentationException(
+            "Application root " + path + " contains ',', which OUTPUT_SOURCES_DIR cannot carry");
+      }
+      roots.add(path);
+    }
+    Files.writeString(outputDir.resolve("test-app-roots.txt"), String.join(",", roots));
   }
 
   /** Runs the Quarkus bootstrap and augmentation for production/native modes. */

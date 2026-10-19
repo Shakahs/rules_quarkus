@@ -279,7 +279,10 @@ This routing is automatic; `quarkus_test` gains no coverage attributes.
 
 Use `quarkus_integration_test` for classes annotated with
 `@QuarkusIntegrationTest`. The rule launches the selected packaged application
-in a separate process while JUnit runs in the Bazel test process:
+in a separate process while JUnit runs in the Bazel test process. Quarkus
+starts the application's Dev Services in the test process, from an
+augmentation of the application's own classes and resources, and hands their
+configuration to the launched application:
 
 ```starlark
 load(

@@ -9,8 +9,10 @@ import com.clementguillot.quarkifier.QuarkifierConfig;
 import com.clementguillot.quarkifier.QuarkifierVersionProvider;
 import com.clementguillot.quarkifier.TestQuarkifierConfig;
 import com.clementguillot.quarkifier.model.transport.BazelApplicationModel;
+import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
 import io.quarkus.maven.dependency.ResolvedDependencyBuilder;
+import io.quarkus.paths.PathList;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -290,7 +292,50 @@ class AugmentationExecutorBugConditionTest {
         RuntimeJarSelector.select(partition, modelBuilder.build()));
   }
 
+  @Test
+  void writeTestApplicationRoots_writesTheApplicationArtifactPathsCommaSeparated(
+      @TempDir Path tempDir) throws Exception {
+    Path classes = tempDir.resolve("lib.quarkus-classes");
+    Path generated = tempDir.resolve("lib_java.quarkus-classes");
+
+    AugmentationExecutor.writeTestApplicationRoots(
+        tempDir, applicationWithPaths(PathList.of(classes, generated)));
+
+    assertEquals(
+        classes + "," + generated,
+        Files.readString(tempDir.resolve("test-app-roots.txt")));
+  }
+
+  @Test
+  void writeTestApplicationRoots_rejectsARootOutputSourcesDirCannotCarry(@TempDir Path tempDir) {
+    Path root = tempDir.resolve("a,b.quarkus-classes");
+
+    AugmentationException exception =
+        assertThrows(
+            AugmentationException.class,
+            () ->
+                AugmentationExecutor.writeTestApplicationRoots(
+                    tempDir, applicationWithPaths(PathList.of(root))));
+
+    assertTrue(exception.getMessage().contains("OUTPUT_SOURCES_DIR"));
+    assertFalse(Files.exists(tempDir.resolve("test-app-roots.txt")));
+  }
+
   // ---- Helper ----
+
+  private static ApplicationModel applicationWithPaths(PathList paths) {
+    var modelBuilder = new ApplicationModelBuilder();
+    modelBuilder.setAppArtifact(
+        ResolvedDependencyBuilder.newInstance()
+            .setGroupId("com.example")
+            .setArtifactId("app")
+            .setVersion("1.0")
+            .setType("jar")
+            .setResolvedPaths(paths)
+            .setRuntimeCp()
+            .setDeploymentCp());
+    return modelBuilder.build();
+  }
 
   private static void writeJar(Path jar, Map<String, String> entries) throws IOException {
     try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar))) {

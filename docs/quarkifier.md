@@ -251,6 +251,21 @@ supplies its declared properties as JVM `-D` flags on the test launcher, ahead
 of every launcher-owned flag. `--build-properties-file` is rejected in TEST
 mode to keep that single channel explicit.
 
+TEST mode writes two files to `--output-dir`: `test-app-model.dat`, the
+serialized model, and `test-app-roots.txt`, the application artifact's paths,
+comma-separated. `@QuarkusTest` reads its application roots from the model
+(`AppMakerHelper` adds the application artifact's content roots).
+`@QuarkusIntegrationTest` still augments the application in the test JVM, to
+start its Dev Services (`IntegrationTestUtil.handleDevServices`), but roots that
+augmentation at the test classes and the `OUTPUT_SOURCES_DIR` system property
+alone. `quarkus_integration_test` therefore passes `test-app-roots.txt` as
+`OUTPUT_SOURCES_DIR`. Without it, that augmentation sees none of the
+application's own classes or resources, and fails on anything that needs them,
+such as a Qute template an endpoint injects. `quarkus_test` never sets the
+property: the model already roots it there, and a second root would duplicate
+every application class in the index. A path containing `,` cannot be carried
+and fails model generation.
+
 ## ApplicationModel Construction
 
 `ExplicitApplicationModelBuilder` translates validated v1 facts. Bazel aspects
