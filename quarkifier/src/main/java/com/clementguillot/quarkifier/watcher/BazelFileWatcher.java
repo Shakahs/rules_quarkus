@@ -431,6 +431,12 @@ public final class BazelFileWatcher implements Closeable {
   boolean runBazelBuild(List<String> targets) {
     List<String> command = new ArrayList<>();
     command.add(config.bazelCommand());
+    // The output base that built the application model, which is where the application runs
+    // from: a `bazel run` with its own --output_base has its own server and output tree, and a
+    // rebuild in the workspace's default one would never reach the running application.
+    if (config.bazelOutputBase() != null) {
+      command.add("--output_base=" + config.bazelOutputBase());
+    }
     command.add("build");
     // Extra flags so the rebuild uses the same configuration as the original
     // `bazel run` — otherwise outputs land in a different bazel-out tree than

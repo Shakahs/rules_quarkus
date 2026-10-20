@@ -452,7 +452,12 @@ That is the cost of making code generation launch-mode aware; build only
 
 On a source change, `BazelFileWatcher` runs `bazel build <targets>` (binary resolved by
 the launcher: `bazel` from `PATH`, falling back to `bazelisk`; overridable via
-`--bazel-command`). The class directories the application runs from were recorded
+`--bazel-command`). It runs in the output base that built the application model, which the
+launcher reads off the model's real path (`<output base>/execroot/<workspace>/bazel-out/...`)
+and passes as `--bazel-output-base`; the watcher puts it before `build` as
+`--output_base=<dir>`. A `bazel run --output_base=<dir> //pkg:app_dev` therefore rebuilds in
+`<dir>`, on that run's own server, rather than in the workspace's default output base, whose
+outputs the application never reads. The class directories the application runs from were recorded
 **at analysis time**, in the application model built in the dev target's configuration —
 so if you launch dev mode with configuration-affecting flags (`--config`, `-c opt`,
 `--define`, ...), the hot-reload build must use the same flags or its outputs land in a
@@ -467,7 +472,16 @@ quarkus_app(
 )
 ```
 
-Then run `bazel run --config=dev //pkg:app_dev`. The watcher warns once per session
+Then run `bazel run --config=dev //pkg:app_dev`.
+
+The application reads the rebuilt class directories from disk, as runfiles of the dev target.
+`bazel run` always downloads a target's runfiles, but a `bazel build` downloads them from a
+remote cache or executor only with `--remote_download_outputs=toplevel` (or `all`): under
+`minimal` the rebuild succeeds while the class directories stay empty on disk. A workspace that
+builds without the bytes at `minimal` puts `--remote_download_outputs=toplevel` in
+`dev_build_args`.
+
+The watcher warns once per session
 when a successful rebuild updates none of the modules' Bazel class directories — the
 telltale sign of a configuration mismatch. The rebuild timeout defaults to 600 s
 (`--bazel-build-timeout-seconds`); on timeout or build failure, the tail of

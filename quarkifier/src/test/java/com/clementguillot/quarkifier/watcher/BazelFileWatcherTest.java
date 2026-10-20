@@ -200,6 +200,49 @@ class BazelFileWatcherTest {
   }
 
   @Test
+  void runBazelBuild_runsInTheOutputBaseThatBuiltTheModel() throws Exception {
+    Path argv = tempDir.resolve("argv.txt");
+    Path bazel = tempDir.resolve("bazel");
+    Files.writeString(bazel, "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argv + "'\n");
+    assertTrue(bazel.toFile().setExecutable(true));
+    var config =
+        TestQuarkifierConfig.parse(
+            "--application-classpath", "app.jar",
+            "--application-model", "model.json",
+            "--output-dir", tempDir.resolve("output").toString(),
+            "--mode", "dev",
+            "--bazel-targets", "//pkg:app_dev",
+            "--workspace-dir", tempDir.toString(),
+            "--bazel-command", bazel.toString(),
+            "--bazel-output-base", "/tmp/bazel-dev",
+            "--bazel-build-args", "--symlink_prefix=/",
+            "--bazel-build-timeout-seconds", "5");
+    var watcher = new BazelFileWatcher(config);
+
+    assertTrue(watcher.runBazelBuild(config.bazelTargets()));
+    watcher.close();
+
+    assertEquals(
+        List.of("--output_base=/tmp/bazel-dev", "build", "--symlink_prefix=/", "//pkg:app_dev"),
+        Files.readAllLines(argv));
+  }
+
+  @Test
+  void runBazelBuild_runsInTheWorkspaceOutputBaseByDefault() throws Exception {
+    Path argv = tempDir.resolve("argv.txt");
+    Path bazel = tempDir.resolve("bazel");
+    Files.writeString(bazel, "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argv + "'\n");
+    assertTrue(bazel.toFile().setExecutable(true));
+    var config = buildingWith(bazel.toString());
+    var watcher = new BazelFileWatcher(config);
+
+    assertTrue(watcher.runBazelBuild(config.bazelTargets()));
+    watcher.close();
+
+    assertEquals(List.of("build", "//pkg:lib"), Files.readAllLines(argv));
+  }
+
+  @Test
   void triggerBuild_publishesNothingWhenTheBuildFails() throws Exception {
     DevSession session = session();
     var watcher =

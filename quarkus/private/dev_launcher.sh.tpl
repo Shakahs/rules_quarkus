@@ -91,10 +91,16 @@ BAZEL_BIN=$(command -v bazel || command -v bazelisk || echo bazel)
 BAZEL_EXEC_ROOT=$(cd "$WORKSPACE_ROOT" && "$BAZEL_BIN" info execution_root 2>/dev/null || printf '%s' "$WORKSPACE_ROOT")
 # The model contains Bazel exec paths. Resolve the model's runfiles symlink to
 # recover the exact execution root that produced it; this also works when the
-# outer `bazel run` used a non-default --output_base.
+# outer `bazel run` used a non-default --output_base. That execution root's output
+# base (<output base>/execroot/<workspace>) is where the hot-reload rebuild runs,
+# so that it rewrites the outputs the application runs from.
 MODEL_REAL=$(realpath "$MODEL_FILE")
+BAZEL_OUTPUT_BASE=""
 case "$MODEL_REAL" in
-  */bazel-out/*) MODEL_EXEC_ROOT="${MODEL_REAL%%/bazel-out/*}" ;;
+  */bazel-out/*)
+    MODEL_EXEC_ROOT="${MODEL_REAL%%/bazel-out/*}"
+    BAZEL_OUTPUT_BASE="${MODEL_EXEC_ROOT%/execroot/*}"
+    ;;
   *) MODEL_EXEC_ROOT="$BAZEL_EXEC_ROOT" ;;
 esac
 HOT_RELOAD_ARGS=()
@@ -219,6 +225,10 @@ _JAVA_ARGFILE=$(mktemp "${OUTPUT_DIR}/quarkus_dev_args_XXXXXX")
   _q "$WORKSPACE_ROOT"
   echo "--bazel-command"
   _q "$BAZEL_BIN"
+  if [ -n "$BAZEL_OUTPUT_BASE" ]; then
+    echo "--bazel-output-base"
+    _q "$BAZEL_OUTPUT_BASE"
+  fi
   if [ -n "$CODEGEN_INPUT_DIRS_VALUE" ]; then
     echo "--codegen-input-dirs"
     _q "$CODEGEN_INPUT_DIRS_VALUE"

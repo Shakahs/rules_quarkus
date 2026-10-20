@@ -434,7 +434,18 @@ class QuarkifierConfigTest {
             "--application-classpath", "a.jar",
             "--output-dir", "/out");
     assertEquals("bazel", config.bazelCommand());
+    assertNull(config.bazelOutputBase());
     assertEquals(List.of(), config.bazelBuildArgs());
+  }
+
+  @Test
+  void parse_bazelOutputBase() {
+    var config =
+        parse(
+            "--application-classpath", "a.jar",
+            "--output-dir", "/out",
+            "--bazel-output-base", "/tmp/bazel-dev");
+    assertEquals(Path.of("/tmp/bazel-dev"), config.bazelOutputBase());
   }
 
   @Test

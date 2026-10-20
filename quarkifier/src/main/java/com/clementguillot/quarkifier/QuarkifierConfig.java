@@ -28,6 +28,8 @@ import java.util.Map;
  * @param workspaceDir Bazel workspace root directory for running bazel build (may be {@code null})
  * @param bazelBuildTimeoutSeconds timeout in seconds for bazel build process (default: 600)
  * @param bazelCommand bazel binary to invoke for hot-reload builds (default: {@code bazel})
+ * @param bazelOutputBase output base the hot-reload {@code bazel build} runs in: the one that built
+ *     the application model (may be {@code null}: the workspace's default output base)
  * @param bazelBuildArgs extra flags for the hot-reload {@code bazel build}
  * @param codegenInputDirs directories holding the declared CodeGenProvider inputs
  * @param projectFiles built outputs (files or directories) to the project directory each is
@@ -54,6 +56,7 @@ public record QuarkifierConfig(
     Path workspaceDir,
     long bazelBuildTimeoutSeconds,
     String bazelCommand,
+    Path bazelOutputBase,
     List<String> bazelBuildArgs,
     List<Path> codegenInputDirs,
     Map<Path, Path> projectFiles,

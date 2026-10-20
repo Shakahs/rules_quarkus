@@ -175,6 +175,13 @@ public final class AugmentationCommand implements Callable<Integer> {
   private String bazelCommand;
 
   @Option(
+      names = "--bazel-output-base",
+      description =
+          "Output base the hot-reload bazel build runs in: the one that built the application"
+              + " model. Defaults to the workspace's own.")
+  private Path bazelOutputBase;
+
+  @Option(
       names = "--bazel-build-args",
       description = "Comma-separated extra flags for the hot-reload bazel build.",
       split = ",")
@@ -265,6 +272,7 @@ public final class AugmentationCommand implements Callable<Integer> {
         workspaceDir,
         bazelBuildTimeoutSeconds,
         bazelCommand,
+        bazelOutputBase,
         orEmpty(bazelBuildArgs),
         orEmpty(codegenInputDirs),
         projectFiles == null
