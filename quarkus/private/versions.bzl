@@ -5,7 +5,7 @@
 # Users MUST use one of these exact versions.
 SUPPORTED_VERSIONS = {
     "3.39": "3.39.5",
-    "3.40": "3.40.1",
+    "3.40": "3.40.1.1",
 }
 
 # Version of rules_quarkus itself — must match the version in MODULE.bazel.

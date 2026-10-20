@@ -71,12 +71,12 @@ See the [Getting Started guide](docs/getting-started.md) for full setup instruct
 
 ## Supported Versions
 
-- **Quarkus**: `3.39.5` or `3.40.1`
+- **Quarkus**: `3.39.5` or `3.40.1.1`
 - **Bazel**: 7+, 8+, or 9+
 - **Java**: 17+
 - **Mode**: Bzlmod only (WORKSPACE not supported)
 
-> **Important**: You must use one of the exact supported versions listed above (`3.39.5` or `3.40.1`). Quarkus bytecode generated during augmentation is tightly coupled to the exact patch version — even within the same minor, runtime incompatibilities can occur.
+> **Important**: You must use one of the exact supported versions listed above (`3.39.5` or `3.40.1.1`). Quarkus bytecode generated during augmentation is tightly coupled to the exact patch version — even within the same minor, runtime incompatibilities can occur.
 
 ## Documentation
 
