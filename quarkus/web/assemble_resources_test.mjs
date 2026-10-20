@@ -21,7 +21,7 @@ async function fixture(t) {
 
 test('generates matching static and SPA shells without copying the bundle', async t => {
   const { bundle, template, output } = await fixture(t);
-  await assembleResources(bundle, template, output);
+  await assembleResources([bundle], template, output);
   const html = await readFile(path.join(output, 'META-INF/resources/index.html'), 'utf8');
   assert.equal(html, await readFile(path.join(output, 'templates/spa.html'), 'utf8'));
   assert.match(html, /href="\/_static\/app-CSSHASH.css"/);
@@ -35,10 +35,10 @@ test('generates matching static and SPA shells without copying the bundle', asyn
 
 test('replaces old hashes when the bundle changes', async t => {
   const { bundle, template, output } = await fixture(t);
-  await assembleResources(bundle, template, output);
+  await assembleResources([bundle], template, output);
   await rm(path.join(bundle, 'app-JSHASH.js'));
   await writeFile(path.join(bundle, 'app-NEWHASH.js'), 'export const updated = true;');
-  await assembleResources(bundle, template, output);
+  await assembleResources([bundle], template, output);
   const html = await readFile(path.join(output, 'templates/spa.html'), 'utf8');
   assert.match(html, /app-NEWHASH.js/);
   assert.equal(html.includes('app-JSHASH.js'), false);
@@ -48,7 +48,7 @@ for (const marker of ['', '<!-- bazel:web-assets --><!-- bazel:web-assets -->'])
   test('rejects a missing or repeated HTML marker: ' + marker.length, async t => {
     const { bundle, template, output } = await fixture(t);
     await writeFile(template, marker);
-    await assert.rejects(assembleResources(bundle, template, output), /exactly one web-assets marker/);
+    await assert.rejects(assembleResources([bundle], template, output), /exactly one web-assets marker/);
   });
 }
 
@@ -56,6 +56,29 @@ for (const entry of ['app-SECOND.js', 'app-SECOND.css']) {
   test('rejects ambiguous bundle entries: ' + entry, async t => {
     const { bundle, template, output } = await fixture(t);
     await writeFile(path.join(bundle, entry), '');
-    await assert.rejects(assembleResources(bundle, template, output), /one application JS and CSS entry/);
+    await assert.rejects(assembleResources([bundle], template, output), /one application JS and CSS entry/);
   });
 }
+
+test('loads a vendor bundle before stable application entries', async t => {
+  const { template, output } = await fixture(t);
+  const vendor = path.join(output, '..', 'vendor-bundle');
+  const app = path.join(output, '..', 'app-bundle');
+  await mkdir(vendor, { recursive: true });
+  await mkdir(app, { recursive: true });
+  await writeFile(path.join(vendor, 'vendor.js'), '');
+  await writeFile(path.join(app, 'app.js'), '');
+  await writeFile(path.join(app, 'app.css'), '');
+  await assembleResources([vendor, app], template, output);
+  const html = await readFile(path.join(output, 'templates/spa.html'), 'utf8');
+  assert.match(html, /href="\/_static\/app.css"/);
+  assert.ok(html.indexOf('src="/_static/vendor.js"') >= 0, 'vendor script');
+  assert.ok(html.indexOf('src="/_static/vendor.js"') < html.indexOf('src="/_static/app.js"'), 'vendor before app');
+});
+
+test('rejects a second vendor entry', async t => {
+  const { bundle, template, output } = await fixture(t);
+  await writeFile(path.join(bundle, 'vendor.js'), '');
+  await writeFile(path.join(bundle, 'vendor-OTHER.js'), '');
+  await assert.rejects(assembleResources([bundle], template, output), /at most one vendor JS and CSS entry/);
+});

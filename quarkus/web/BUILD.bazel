@@ -1,12 +1,18 @@
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_test")
 
 package(default_visibility = ["//visibility:public"])
-exports_files(["defs.bzl", "defs_test.bzl", "tests/FrontendArchiveTest.java"])
+exports_files(["defs.bzl", "defs_test.bzl", "dev_esbuild_config.mjs", "tests/FrontendArchiveTest.java"])
 
 js_binary(
     name = "assemble_resources",
     entry_point = "assemble_resources.mjs",
     data = ["assemble_resources_lib.mjs"],
+)
+
+js_binary(
+    name = "vendor_modules",
+    entry_point = "vendor_modules.mjs",
+    data = ["vendor_modules_lib.mjs"],
 )
 
 config_setting(
@@ -18,4 +24,10 @@ js_test(
     name = "assemble_resources_test",
     entry_point = "assemble_resources_test.mjs",
     data = ["assemble_resources_lib.mjs"],
+)
+
+js_test(
+    name = "vendor_modules_test",
+    entry_point = "vendor_modules_test.mjs",
+    data = ["vendor_modules_lib.mjs"],
 )

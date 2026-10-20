@@ -326,9 +326,9 @@ rebuilt class does. Qute template changes trigger Quarkus reload; static assets 
 their generated URLs.
 
 An application that wants a different artifact in the dev loop than the one it
-packages selects on `@rules_quarkus//quarkus:dev_lifecycle`, which is true
-throughout the dev target's graph — a fast unoptimized link of a browser module in
-place of the whole-program one, for instance.
+packages names it in `quarkus_app`'s `dev_deps` — a fast unoptimized link of a browser
+module in place of the whole-program one, for instance. The dev target builds in the
+caller's configuration, so a `select` cannot tell it apart from the application.
 
 ### Project files: outputs the application reads from its project directory
 
@@ -376,9 +376,8 @@ and Bazel replacing the file behind it produces no event there. Changes the mirr
 makes are also excluded from `BazelFileWatcher`, so a directory under a watched root
 cannot make the mirror's writes trigger another build.
 
-Because the prod build packages the same asset on the classpath, a rule usually
-selects on `@rules_quarkus//quarkus:dev_lifecycle` to leave it out of the dev jar.
-Otherwise both copies reach the bundler.
+Because the prod build packages the same asset on the classpath, an application usually
+leaves it out of the dev target's `dev_deps`. Otherwise both copies reach the bundler.
 
 ### Incremental Scala.js modules
 

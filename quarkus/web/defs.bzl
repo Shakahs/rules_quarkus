@@ -40,6 +40,67 @@ _frontend_library = rule(
     },
 )
 
+def _frontend_files_impl(ctx):
+    return [DefaultInfo(files = depset(transitive = [src[DefaultInfo].files for src in ctx.attr.srcs]))]
+
+# Bundle outputs in the same lifecycle-free configuration as the resource libraries, so a dev
+# application mirroring them shares the actions its shell archive is built from.
+_frontend_files = rule(
+    implementation = _frontend_files_impl,
+    cfg = _frontend_lifecycle,
+    attrs = {
+        "srcs": attr.label_list(mandatory = True, allow_files = True),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+_ASSET_LOADERS = {".wasm": "file", ".svg": "file", ".woff2": "file", ".png": "file"}
+
+def _resource_library(name, bundles, html, assets, visibility):
+    """The shell and metadata of `bundles`, plus `assets` under `_static`, as a resource library."""
+    resources = name + "_resources"
+    js_run_binary(
+        name = resources,
+        tool = Label("//quarkus/web:assemble_resources"),
+        copy_srcs_to_bin = False,
+        srcs = bundles + [html],
+        outs = [
+            resources + "/META-INF/resources/index.html",
+            resources + "/templates/spa.html",
+            resources + "/META-INF/beans.xml",
+        ],
+        args = ["$(execpath " + html + ")", "$(RULEDIR)/" + resources] + ["$(execpath " + bundle + ")" for bundle in bundles],
+        mnemonic = "QuarkusWebResources",
+    )
+    pkg_files(
+        name = name + "_files",
+        srcs = [":" + resources],
+        strip_prefix = strip_prefix.from_pkg(resources),
+    )
+    if assets:
+        pkg_files(
+            name = name + "_assets",
+            srcs = assets,
+            prefix = "META-INF/resources/_static",
+            renames = {asset: REMOVE_BASE_DIRECTORY for asset in assets},
+        )
+    pkg_zip(
+        name = name + "_jar",
+        srcs = [":" + name + "_files"] + ([":" + name + "_assets"] if assets else []),
+        package_file_name = name + ".jar",
+    )
+    java_import(
+        name = name + "_library",
+        jars = [":" + name + "_jar"],
+    )
+    _frontend_library(
+        name = name,
+        library = ":" + name + "_library",
+        visibility = visibility,
+    )
+
 def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linked_module_roots, node_modules, tailwind, html, external = [], minify = None, visibility = None):
     """Build Tailwind/ES modules once and export a JavaInfo resource archive.
 
@@ -139,45 +200,74 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
             "entryNames": "app-[hash]",
             "chunkNames": "chunks/[name]-[hash]",
             "assetNames": "assets/[name]-[hash]",
-            "loader": {".wasm": "file", ".svg": "file", ".woff2": "file", ".png": "file"},
+            "loader": _ASSET_LOADERS,
         },
     )
-    resources = name + "_resources"
+    _resource_library(name, [":" + name + "_esbuild"], html, [":" + name + "_esbuild"], visibility)
+
+    # The dev loop's variant: the npm graph and the application as two bundles, served from the
+    # project directory rather than packaged. `<name>_dev` is a resource library holding only the
+    # HTML shell, and `<name>_dev_static` the bundle files, which a dev application mirrors into
+    # a directory its HTTP server serves (`dev_project_files`, `quarkus.http.static-dir`).
+    #
+    # The vendor bundle covers the npm specifiers the application's modules import, and is
+    # rebuilt only when that set changes. The application bundle resolves each specifier to the
+    # vendor bundle's registry instead of node_modules, so a save re-bundles only the
+    # application's own modules. Neither bundle splits, and their entries keep stable names: the
+    # files a running application serves are the ones it registered when it started, read
+    # afresh on every request, so a rebuild reaches the browser without a restart.
+    vendor_entry = name + "_dev_vendor_entry.js"
     js_run_binary(
-        name = resources,
-        tool = Label("//quarkus/web:assemble_resources"),
+        name = name + "_dev_vendor_entry",
+        tool = Label("//quarkus/web:vendor_modules"),
         copy_srcs_to_bin = False,
-        srcs = [":" + name + "_esbuild", html],
-        outs = [
-            resources + "/META-INF/resources/index.html",
-            resources + "/templates/spa.html",
-            resources + "/META-INF/beans.xml",
-        ],
-        args = ["$(execpath :" + name + "_esbuild)", "$(execpath " + html + ")", "$(RULEDIR)/" + resources],
-        mnemonic = "QuarkusWebResources",
+        srcs = [":" + stage],
+        outs = [vendor_entry],
+        args = ["$(execpath :" + stage + ")", "$(RULEDIR)/" + vendor_entry] + external,
+        mnemonic = "QuarkusWebVendorModules",
     )
-    pkg_files(
-        name = name + "_files",
-        srcs = [":" + resources],
-        strip_prefix = strip_prefix.from_pkg(resources),
+    esbuild(
+        name = name + "_dev_vendor",
+        entry_point = ":" + vendor_entry,
+        deps = [node_modules],
+        external = external,
+        output_dir = True,
+        format = "esm",
+        target = ["es2022"],
+        minify = minify_js,
+        sourcemap = False,
+        define = {"process.env.NODE_ENV": "\"development\""},
+        config = {
+            "publicPath": "/_static/",
+            "entryNames": "vendor",
+            "assetNames": "assets/[name]-[hash]",
+            "loader": _ASSET_LOADERS,
+        },
     )
-    pkg_files(
-        name = name + "_assets",
-        srcs = [":" + name + "_esbuild"],
-        prefix = "META-INF/resources/_static",
-        renames = {":" + name + "_esbuild": REMOVE_BASE_DIRECTORY},
+    # rules_esbuild copies its config into the output tree, which it refuses for a source file
+    # of another repository: the configuration is this package's own copy.
+    copy_file(
+        name = name + "_dev_esbuild_config",
+        src = Label("//quarkus/web:dev_esbuild_config.mjs"),
+        out = name + "_dev_esbuild_config.mjs",
     )
-    pkg_zip(
-        name = name + "_jar",
-        srcs = [":" + name + "_files", ":" + name + "_assets"],
-        package_file_name = name + ".jar",
+    esbuild(
+        name = name + "_dev_app",
+        entry_point = ":" + entry,
+        srcs = [":" + stage, ":" + css],
+        external = external,
+        output_dir = True,
+        format = "esm",
+        target = ["es2022"],
+        minify = minify_js,
+        sourcemap = False,
+        define = {"process.env.NODE_ENV": "\"development\""},
+        config = ":" + name + "_dev_esbuild_config",
     )
-    java_import(
-        name = name + "_library",
-        jars = [":" + name + "_jar"],
-    )
-    _frontend_library(
-        name = name,
-        library = ":" + name + "_library",
+    dev_bundles = [":" + name + "_dev_vendor", ":" + name + "_dev_app"]
+    _resource_library(name + "_dev", dev_bundles, html, [], visibility)
+    _frontend_files(
+        name = name + "_dev_static",
+        srcs = dev_bundles,
         visibility = visibility,
     )

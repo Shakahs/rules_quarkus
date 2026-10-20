@@ -555,7 +555,7 @@ def quarkus_java_library(name, srcs = [], resources = [], deps = [], codegen_src
         **java_kwargs
     )
 
-def quarkus_app(name, dev = True, dev_build_args = [], dev_project_files = {{}}, dev_watch_dirs = [], native = False, native_container_build = False,
+def quarkus_app(name, dev = True, dev_build_args = [], dev_deps = None, dev_project_files = {{}}, dev_watch_dirs = [], native = False, native_container_build = False,
                 native_container_runtime = "auto", native_builder_image = _DEFAULT_BUILDER_IMAGE,
                 package_type = "fast-jar", build_properties = {{}}, **kwargs):
     \"\"\"Builds a Quarkus application with optional dev-mode and native targets.
@@ -571,6 +571,11 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_project_files = {{}},
         dev_build_args: Extra flags for the hot-reload `bazel build` (e.g. ["--config=dev"]).
             Must match the flags you pass to `bazel run` for the dev target, otherwise
             rebuilt classes land in a different output tree and hot-reload syncs stale files.
+        dev_deps: The dev target's deps, where the dev loop wants a different artifact from
+            the one the application packages (e.g. a frontend resource library holding only the
+            HTML shell, its bundle served from `dev_project_files`). Defaults to `deps`. The
+            dev target builds in the caller's configuration, so this, not a `select`, is what
+            tells the two apart.
         dev_project_files: Built files the application reads from its project directory
             rather than its classpath, keyed by target and valued by the workspace-relative
             directory the outputs are mirrored into for the dev session
@@ -631,13 +636,16 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_project_files = {{}},
         version = kwargs.get("version", ""),
     )
     if dev:
+        dev_common = dict(common)
+        if dev_deps != None:
+            dev_common["deps"] = dev_deps
         quarkus_dev_rule(
             name = name + "_dev",
             core_deployment_deps = _CORE_DEPLOYMENT_DEPS,
             dev_build_args = dev_build_args,
             dev_project_files = dev_project_files,
             dev_watch_dirs = dev_watch_dirs,
-            **common
+            **dev_common
         )
     if native:
         quarkus_native_app_rule(

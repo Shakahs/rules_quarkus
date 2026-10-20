@@ -21,7 +21,7 @@ and `dbg` use development flags and the development link. `minify = True` minifi
 the JS and CSS in every mode, without changing `NODE_ENV` or the link. Production Quarkus
 packaging rules enforce `opt` through an incoming configuration transition.
 Dev and tests share the development bundle, with one cached action per set of
-inputs and compilation mode. Frontend inputs are declared: an edit rebuilds the
+inputs and compilation mode, unless dev mode takes the dev loop's variant below. Frontend inputs are declared: an edit rebuilds the
 affected action, while unchanged test classes reuse the bundle artifact.
 
 Consumers own their npm lock, Node toolchain, Tailwind version and esbuild
@@ -38,6 +38,55 @@ The archive maps esbuild's output directory directly to
 `META-INF/resources/_static`; HTML assembly writes only shells and metadata.
 Esbuild's public path is `/_static/`, so imported file assets such as WASM resolve
 to their packaged URLs from any application route.
+
+## The dev loop's bundle
+
+Rebuilding the whole bundle on every save costs a dev loop more than esbuild's own work. The
+npm graph behind a typical application is thousands of modules, and rules_esbuild's sandbox
+plugin answers each of their resolutions with a second one, a round trip between esbuild and
+Node, so that graph dominates the build even when only the application's modules changed. A
+packaged bundle on the classpath also changes the application's archive, and with it the
+Qute shell naming its hashed files, so every save restarts the application too.
+
+`quarkus_web_bundle` therefore also declares a variant for dev mode, which an application
+names in `quarkus_app`'s `dev_deps`:
+
+- `<name>_dev_vendor` bundles the npm specifiers the application's modules import
+  (`vendor_modules.mjs` reads them off the staged sources, without the `external` ones) into
+  `vendor.js`, which publishes each module on a page-global registry as an ES module record.
+  Its entry changes only when that set of specifiers does, so the action is a cache hit
+  otherwise.
+- `<name>_dev_app` bundles the application's modules into `app.js` and `app.css`. Its esbuild
+  configuration (`dev_esbuild_config.mjs`) resolves every npm specifier to a CommonJS shim
+  reading the registry, so this build never walks node_modules. esbuild's interop then gives a
+  namespace, named or default import exactly what the record holds, whether the package is
+  CommonJS or an ES module.
+- `<name>_dev` is a resource library holding only the HTML shell, which loads `vendor.js`
+  before `app.js`. `<name>_dev_static` is the two bundles' files, for `dev_project_files`.
+
+Neither dev bundle splits, and their entries keep stable names, so a rebuild leaves the shell,
+and with it the classpath, unchanged. Quarkus's `quarkus.http.static-dir` registers the files of
+a directory when the application starts and serves their current contents from then on: an
+application mirrors `<name>_dev_static` into a directory of its own and serves it at
+`/_static`, and a frontend edit reaches the browser on its next load, with no restart. An asset
+whose name changes (a new hashed image, say) is served once the application next restarts.
+
+```starlark
+quarkus_app(
+    name = "app",
+    deps = [":lib", "//web:frontend"],
+    dev_deps = [":lib", "//web:frontend_dev"],
+    dev_project_files = {"//web:frontend_dev_static": "app/target/dev-static"},
+)
+```
+
+```properties
+%dev.quarkus.http.static-dir.path=app/target/dev-static
+%dev.quarkus.http.static-dir.endpoint=/_static
+```
+
+The path is relative to the workspace root, the directory dev mode runs in. Browser tests and
+production builds keep the packaged bundle.
 
 Consumers can declare `quarkus_web_bundle_tests` from `quarkus/web/defs_test.bzl`
 against a local bundle to verify lifecycle cache sharing, JavaScript input
