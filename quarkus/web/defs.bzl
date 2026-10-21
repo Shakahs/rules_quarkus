@@ -58,7 +58,7 @@ _frontend_files = rule(
 
 _ASSET_LOADERS = {".wasm": "file", ".svg": "file", ".woff2": "file", ".png": "file"}
 
-def _resource_library(name, bundles, html, assets, visibility):
+def _resource_library(name, bundles, html, assets, visibility, static_assets = []):
     """The shell and metadata of `bundles`, plus `assets` under `_static`, as a resource library."""
     resources = name + "_resources"
     js_run_binary(
@@ -86,9 +86,16 @@ def _resource_library(name, bundles, html, assets, visibility):
             prefix = "META-INF/resources/_static",
             renames = {asset: REMOVE_BASE_DIRECTORY for asset in assets},
         )
+    if static_assets:
+        pkg_files(
+            name = name + "_static_assets",
+            srcs = static_assets,
+            prefix = "META-INF/resources/_static",
+            strip_prefix = strip_prefix.from_pkg(),
+        )
     pkg_zip(
         name = name + "_jar",
-        srcs = [":" + name + "_files"] + ([":" + name + "_assets"] if assets else []),
+        srcs = [":" + name + "_files"] + ([":" + name + "_assets"] if assets else []) + ([":" + name + "_static_assets"] if static_assets else []),
         package_file_name = name + ".jar",
     )
     java_import(
@@ -101,7 +108,7 @@ def _resource_library(name, bundles, html, assets, visibility):
         visibility = visibility,
     )
 
-def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linked_module_roots, node_modules, tailwind, html, external = [], minify = None, visibility = None):
+def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linked_module_roots, node_modules, tailwind, html, external = [], minify = None, visibility = None, static_assets = []):
     """Build Tailwind/ES modules once and export a JavaInfo resource archive.
 
     Args:
@@ -118,6 +125,7 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
         minify: Whether esbuild and Tailwind minify their output in every compilation mode.
             Unset, they minify only in `opt`.
         visibility: Visibility of the resulting resource library.
+        static_assets: Additional files served under `_static`, such as separately loaded npm workers.
     """
     production = Label("//quarkus/web:production")
     if minify == None:
@@ -203,7 +211,7 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
             "loader": _ASSET_LOADERS,
         },
     )
-    _resource_library(name, [":" + name + "_esbuild"], html, [":" + name + "_esbuild"], visibility)
+    _resource_library(name, [":" + name + "_esbuild"], html, [":" + name + "_esbuild"], visibility, static_assets)
 
     # The dev loop's variant: the npm graph and the application as two bundles, served from the
     # project directory rather than packaged. `<name>_dev` is a resource library holding only the
@@ -268,6 +276,6 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
     _resource_library(name + "_dev", dev_bundles, html, [], visibility)
     _frontend_files(
         name = name + "_dev_static",
-        srcs = dev_bundles,
+        srcs = dev_bundles + static_assets,
         visibility = visibility,
     )
