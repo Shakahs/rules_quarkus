@@ -24,11 +24,13 @@ load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
 def _regex_escape_class_name(class_name):
     return class_name.replace("\\", "\\\\").replace(".", "\\.").replace("$", "\\$")
 
-def _build_test_args(test_packages, test_classes, fail_if_no_tests, integration = False):
+def _build_test_args(test_packages, test_classes, fail_if_no_tests, fail_fast, integration = False):
     """Builds JUnit ConsoleLauncher CLI arguments."""
     args = ["execute"]
     if fail_if_no_tests:
         args.append("--fail-if-no-tests")
+    if fail_fast:
+        args.append("--fail-fast")
     for pkg in test_packages:
         args.append("--select-package=" + pkg)
     for cls in test_classes:
@@ -279,7 +281,7 @@ def _test_impl(ctx, integration):
             "%{jacoco_runner}": jacoco_runner_path,
             "%{quarkus_jacoco_present}": "true" if _quarkus_jacoco_present(integration, has_maven_artifact(ctx.attr.deps, "io.quarkus", "quarkus-jacoco")) else "false",
             "%{runfiles_env}": "\n".join(runfiles_env),
-            "%{test_args}": _build_test_args(ctx.attr.test_packages, ctx.attr.test_classes, ctx.attr.fail_if_no_tests, integration),
+            "%{test_args}": _build_test_args(ctx.attr.test_packages, ctx.attr.test_classes, ctx.attr.fail_if_no_tests, ctx.attr.fail_fast, integration),
             "%{test_kind}": "integration" if integration else "quarkus",
             "%{tool_jar}": tool_jar.short_path,
             "%{workspace}": ctx.workspace_name,
@@ -362,6 +364,10 @@ def _test_attrs(integration = False):
             ],
             providers = [JavaInfo],
             doc = "Test java_library targets. Transitive deps (app code, quarkus-junit, etc.) are included automatically.",
+        ),
+        "fail_fast": attr.bool(
+            default = False,
+            doc = "Stop the run at its first failed test (JUnit ConsoleLauncher `--fail-fast`): the tests after it do not run.",
         ),
         "fail_if_no_tests": attr.bool(
             default = True,

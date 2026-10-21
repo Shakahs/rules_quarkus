@@ -27,11 +27,28 @@ def _unit_test_args_test_impl(ctx):
             ["smoke"],
             ["smoke.GreetingResourceTest"],
             True,
+            False,
         ),
     )
     return unittest.end(env)
 
 unit_test_args_test = unittest.make(_unit_test_args_test_impl)
+
+def _fail_fast_test_args_test_impl(ctx):
+    env = unittest.begin(ctx)
+    asserts.equals(
+        env,
+        "execute --fail-if-no-tests --fail-fast --select-class=smoke.GreetingResourceTest --exclude-classname=.*IT$",
+        build_test_args_for_test(
+            [],
+            ["smoke.GreetingResourceTest"],
+            True,
+            True,
+        ),
+    )
+    return unittest.end(env)
+
+fail_fast_test_args_test = unittest.make(_fail_fast_test_args_test_impl)
 
 def _integration_test_args_test_impl(ctx):
     env = unittest.begin(ctx)
@@ -42,6 +59,7 @@ def _integration_test_args_test_impl(ctx):
             ["smoke"],
             ["smoke.ExplicitIntegrationTest"],
             True,
+            False,
             integration = True,
         ),
     )
@@ -87,4 +105,5 @@ def quarkus_test_impl_test_suite(name = "quarkus_test_impl_tests"):
         integration_version_test,
         quarkus_jacoco_present_test,
         unit_test_args_test,
+        fail_fast_test_args_test,
     )
