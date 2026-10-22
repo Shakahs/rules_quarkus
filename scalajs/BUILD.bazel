@@ -114,6 +114,8 @@ java_test(
         "@maven_scalajs//:org_junit_jupiter_junit_jupiter",
         "@maven_scalajs//:org_junit_platform_junit_platform_console_standalone",
         "@maven_scalajs//:org_junit_platform_junit_platform_launcher",
+        "@maven_scalajs//:org_scala_js_scalajs_logging_2_13",
+        "@maven_scalajs//:org_scala_sbt_util_interface",
         "@rules_java//java/runfiles",
     ],
 )

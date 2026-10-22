@@ -4,8 +4,8 @@ import java.io.PrintWriter;
 import java.util.function.Supplier;
 import xsbti.Logger;
 
-/** Zinc's log, at warning level and above, on the request's writer. */
-final class WriterLogger implements Logger {
+/** Zinc and Scala.js diagnostics, at every level, on the Bazel request's writer. */
+final class WriterLogger implements Logger, org.scalajs.logging.Logger {
 
   private final PrintWriter out;
 
@@ -25,16 +25,26 @@ final class WriterLogger implements Logger {
 
   @Override
   public void info(Supplier<String> msg) {
-    // Zinc's progress narration is noise in a build log.
+    out.println("info: " + msg.get());
   }
 
   @Override
   public void debug(Supplier<String> msg) {
-    // See info.
+    out.println("debug: " + msg.get());
   }
 
   @Override
   public void trace(Supplier<Throwable> exception) {
     exception.get().printStackTrace(out);
+  }
+
+  @Override
+  public void log(org.scalajs.logging.Level level, scala.Function0<String> message) {
+    out.println(level.toString().toLowerCase(java.util.Locale.ROOT) + ": " + message.apply());
+  }
+
+  @Override
+  public void trace(scala.Function0<Throwable> exception) {
+    exception.apply().printStackTrace(out);
   }
 }

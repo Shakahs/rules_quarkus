@@ -409,6 +409,12 @@ scala_js_dev_module(
 - **Failed compiles keep the last good state.** The class-file manager is
   transactional, and Scala.js IR and TASTy are managed as class files, so a compile
   error restores the previous products and a deleted class takes its IR with it.
+- **Diagnostics belong to the build request.** Zinc and Scala.js linker output,
+  including info/debug messages and exception traces, goes to Bazel's request
+  writer. Linker errors retain their missing-symbol details and checked-exception
+  stack. One-shot execution writes to stderr and flushes it without closing the
+  process-owned stream; persistent workers return diagnostics in their response
+  without writing into the protocol's stdout stream.
 - **The toolchain is the consumer's.** Register a `toolchain()` of type
   `@com_clementguillot_rules_quarkus//quarkus/scalajs:toolchain_type` wrapping a
   `scala_js_dev_toolchain` that names the compiler bridge

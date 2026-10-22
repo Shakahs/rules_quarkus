@@ -31,8 +31,15 @@ public final class ScalaJsDevMain {
       return;
     }
     int exitCode;
-    try (PrintWriter out = new PrintWriter(System.err, true)) {
+    PrintWriter out = new PrintWriter(System.err, true);
+    try {
       exitCode = run(Arguments.expand(args), out);
+    } catch (Exception e) {
+      e.printStackTrace(out);
+      exitCode = 1;
+    } finally {
+      // stderr is process-owned; closing it would hide an uncaught failure's diagnostics.
+      out.flush();
     }
     System.exit(exitCode);
   }
@@ -51,9 +58,11 @@ public final class ScalaJsDevMain {
     } catch (IllegalArgumentException e) {
       out.println(e.getMessage());
       return 2;
-    } catch (RuntimeException | IOException e) {
+    } catch (Exception e) {
       e.printStackTrace(out);
       return 1;
+    } finally {
+      out.flush();
     }
   }
 

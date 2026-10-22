@@ -9,7 +9,7 @@ import java.util.List;
 import org.scalajs.linker.PathIRContainer;
 import org.scalajs.linker.PathOutputDirectory;
 import org.scalajs.linker.StandardImpl;
-import org.scalajs.logging.NullLogger$;
+import org.scalajs.logging.Logger;
 import scala.Tuple2;
 import scala.collection.immutable.Seq;
 import scala.concurrent.Await$;
@@ -80,7 +80,8 @@ final class ScalaJsLink {
   }
 
   /** Links the IR under {@code classes} and in {@code jars} into {@code outputDir}. */
-  void link(Path classes, List<Path> jars, String mainClass, Path outputDir) throws IOException {
+  void link(Path classes, List<Path> jars, String mainClass, Path outputDir, Logger logger)
+      throws IOException {
     Files.createDirectories(outputDir);
     ExecutionContext ec = ExecutionContext$.MODULE$.global();
     List<Path> classpath = new ArrayList<>(jars.size() + 1);
@@ -98,7 +99,7 @@ final class ScalaJsLink {
     Object output = PathOutputDirectory.apply(outputDir);
     await(
         (Future<?>)
-            invoke(linkMethod, linker, irFiles, initializers, output, NullLogger$.MODULE$, ec));
+            invoke(linkMethod, linker, irFiles, initializers, output, logger, ec));
   }
 
   private static Object invoke(Method method, Object target, Object... args) {

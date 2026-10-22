@@ -156,20 +156,129 @@ class ScalaJsDevMainTest {
     assertTrue(log.toString().contains("--bogus"));
   }
 
-  private int runInFreshProcess() throws IOException, InterruptedException {
-    Path argsFile = tempDir.resolve("args.txt");
-    Files.write(argsFile, arguments(), StandardCharsets.UTF_8);
-    String java = ProcessHandle.current().info().command().orElseThrow();
+  @Test
+  void preservesEveryZincLogLevelAndExceptionCause() {
+    StringWriter output = new StringWriter();
+    PrintWriter writer = new PrintWriter(output);
+    xsbti.Logger logger = new WriterLogger(writer);
+    logger.error(() -> "compiler error");
+    logger.warn(() -> "compiler warning");
+    logger.info(() -> "compiler progress");
+    logger.debug(() -> "incremental compilation detail");
+    logger.trace(
+        () -> new IOException("outer failure", new IllegalStateException("underlying failure")));
+    writer.flush();
+
+    String diagnostics = output.toString();
+    assertTrue(diagnostics.contains("error: compiler error"), diagnostics);
+    assertTrue(diagnostics.contains("warning: compiler warning"), diagnostics);
+    assertTrue(diagnostics.contains("info: compiler progress"), diagnostics);
+    assertTrue(diagnostics.contains("debug: incremental compilation detail"), diagnostics);
+    assertTrue(diagnostics.contains("java.io.IOException: outer failure"), diagnostics);
+    assertTrue(
+        diagnostics.contains("Caused by: java.lang.IllegalStateException: underlying failure"),
+        diagnostics);
+    assertTrue(diagnostics.contains("\tat "), diagnostics);
+  }
+
+  @Test
+  void preservesEveryScalaJsLogLevelAndTrace() {
+    StringWriter output = new StringWriter();
+    org.scalajs.logging.Logger logger = new WriterLogger(new PrintWriter(output));
+    logger.error(() -> "link error");
+    logger.warn(() -> "link warning");
+    logger.info(() -> "link progress");
+    logger.debug(() -> "link reachability detail");
+    logger.trace(() -> new IOException("link exception"));
+
+    String diagnostics = output.toString();
+    assertTrue(diagnostics.contains("error: link error"), diagnostics);
+    assertTrue(diagnostics.contains("warn: link warning"), diagnostics);
+    assertTrue(diagnostics.contains("info: link progress"), diagnostics);
+    assertTrue(diagnostics.contains("debug: link reachability detail"), diagnostics);
+    assertTrue(diagnostics.contains("java.io.IOException: link exception"), diagnostics);
+    assertTrue(diagnostics.contains("\tat "), diagnostics);
+  }
+
+  @Test
+  void keepsDiagnosticsOnTheirOwnRequestWriter() {
+    StringWriter first = new StringWriter();
+    StringWriter second = new StringWriter();
+    xsbti.Logger firstLogger = new WriterLogger(new PrintWriter(first));
+    xsbti.Logger secondLogger = new WriterLogger(new PrintWriter(second));
+
+    firstLogger.info(() -> "first request");
+    secondLogger.debug(() -> "second request");
+    firstLogger.error(() -> "first failure");
+
+    assertTrue(first.toString().contains("first request"));
+    assertTrue(first.toString().contains("first failure"));
+    assertFalse(first.toString().contains("second request"));
+    assertTrue(second.toString().contains("second request"));
+    assertFalse(second.toString().contains("first request"));
+    assertFalse(second.toString().contains("first failure"));
+  }
+
+  @Test
+  void reportsLinkerDetailsAndCheckedExceptionToTheRequestWriter() {
+    StringWriter output = new StringWriter();
+    assertEquals(1, ScalaJsDevMain.run(argumentsWithMissingMain(), new PrintWriter(output)));
+
+    assertLinkFailureDiagnostics(output.toString());
+  }
+
+  @Test
+  void reportsLinkerDetailsAndCheckedExceptionFromAFreshProcess()
+      throws IOException, InterruptedException {
+    Path log = tempDir.resolve("failed-link.log");
     Process process =
-        new ProcessBuilder(
-                java,
-                "-Xmx2g",
-                "-cp",
-                System.getProperty("java.class.path"),
-                ScalaJsDevMain.class.getName(),
-                "@" + argsFile)
-            .inheritIO()
+        createFreshProcess(argumentsWithMissingMain())
+            .redirectErrorStream(true)
+            .redirectOutput(log.toFile())
             .start();
+    assertEquals(1, waitForProcess(process));
+
+    String diagnostics = Files.readString(log);
+    // Keep the failed action's output in the test log as well as asserting its contents.
+    System.err.print(diagnostics);
+    assertLinkFailureDiagnostics(diagnostics);
+    assertFalse(diagnostics.contains("Stream closed"), diagnostics);
+  }
+
+  private List<String> argumentsWithMissingMain() {
+    List<String> args = arguments();
+    args.set(args.indexOf("--main-class") + 1, "demo.MissingMain");
+    return args;
+  }
+
+  private static void assertLinkFailureDiagnostics(String diagnostics) {
+    assertTrue(diagnostics.contains("error: "), diagnostics);
+    assertTrue(diagnostics.contains("demo.MissingMain"), diagnostics);
+    assertTrue(diagnostics.contains("debug: Linker:"), diagnostics);
+    assertTrue(
+        diagnostics.contains("org.scalajs.linker.interface.LinkingException: There were linking errors"),
+        diagnostics);
+    assertTrue(diagnostics.contains("\tat org.scalajs.linker."), diagnostics);
+  }
+
+  private int runInFreshProcess() throws IOException, InterruptedException {
+    return waitForProcess(createFreshProcess(arguments()).inheritIO().start());
+  }
+
+  private ProcessBuilder createFreshProcess(List<String> arguments) throws IOException {
+    Path argsFile = tempDir.resolve("args.txt");
+    Files.write(argsFile, arguments, StandardCharsets.UTF_8);
+    String java = ProcessHandle.current().info().command().orElseThrow();
+    return new ProcessBuilder(
+        java,
+        "-Xmx2g",
+        "-cp",
+        System.getProperty("java.class.path"),
+        ScalaJsDevMain.class.getName(),
+        "@" + argsFile);
+  }
+
+  private int waitForProcess(Process process) throws InterruptedException {
     assertTrue(process.waitFor(10, TimeUnit.MINUTES), "the fresh process finished");
     return process.exitValue();
   }

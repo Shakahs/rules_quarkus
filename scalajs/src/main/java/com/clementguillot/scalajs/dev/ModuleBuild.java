@@ -54,6 +54,7 @@ final class ModuleBuild {
     }
 
     boolean build(ModuleRequest request, PrintWriter out) throws IOException {
+      WriterLogger logger = new WriterLogger(out);
       StateDirectory state = new StateDirectory(request.stateDir());
       state.prepare(scalaVersion, bridgeJar);
 
@@ -67,11 +68,11 @@ final class ModuleBuild {
               request.classpathJars(),
               request.scalacOptions(),
               new CompilerReporter(out),
-              new WriterLogger(out));
+              logger);
       if (!compiled) {
         return false;
       }
-      link.link(state.classes(), request.linkJars(), request.mainClass(), request.outputDir());
+      link.link(state.classes(), request.linkJars(), request.mainClass(), request.outputDir(), logger);
       return true;
     }
   }
