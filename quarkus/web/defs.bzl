@@ -10,51 +10,8 @@ load("@aspect_rules_esbuild//esbuild:defs.bzl", "esbuild")
 load("@aspect_rules_js//js:defs.bzl", "js_run_binary")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_java//java:java_import.bzl", "java_import")
-load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("@rules_pkg//pkg:mappings.bzl", "REMOVE_BASE_DIRECTORY", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
-
-_LIFECYCLE = str(Label("//quarkus/private:codegen_lifecycle"))
-
-def _frontend_lifecycle_impl(_settings, _attr):
-    return {_LIFECYCLE: "main"}
-
-_frontend_lifecycle = transition(
-    implementation = _frontend_lifecycle_impl,
-    inputs = [],
-    outputs = [_LIFECYCLE],
-)
-
-def _frontend_library_impl(ctx):
-    library = ctx.attr.library
-    return [library[JavaInfo], library[DefaultInfo]]
-
-_frontend_library = rule(
-    implementation = _frontend_library_impl,
-    cfg = _frontend_lifecycle,
-    attrs = {
-        "library": attr.label(mandatory = True, providers = [JavaInfo]),
-        "_allowlist_function_transition": attr.label(
-            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
-        ),
-    },
-)
-
-def _frontend_files_impl(ctx):
-    return [DefaultInfo(files = depset(transitive = [src[DefaultInfo].files for src in ctx.attr.srcs]))]
-
-# Bundle outputs in the same lifecycle-free configuration as the resource libraries, so a dev
-# application mirroring them shares the actions its shell archive is built from.
-_frontend_files = rule(
-    implementation = _frontend_files_impl,
-    cfg = _frontend_lifecycle,
-    attrs = {
-        "srcs": attr.label_list(mandatory = True, allow_files = True),
-        "_allowlist_function_transition": attr.label(
-            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
-        ),
-    },
-)
 
 _ASSET_LOADERS = {".wasm": "file", ".svg": "file", ".woff2": "file", ".png": "file"}
 
@@ -99,12 +56,8 @@ def _resource_library(name, bundles, html, assets, visibility, static_assets = [
         package_file_name = name + ".jar",
     )
     java_import(
-        name = name + "_library",
-        jars = [":" + name + "_jar"],
-    )
-    _frontend_library(
         name = name,
-        library = ":" + name + "_library",
+        jars = [":" + name + "_jar"],
         visibility = visibility,
     )
 
@@ -274,7 +227,7 @@ def quarkus_web_bundle(name, srcs, source_root, stylesheet, linked_module, linke
     )
     dev_bundles = [":" + name + "_dev_vendor", ":" + name + "_dev_app"]
     _resource_library(name + "_dev", dev_bundles, html, [], visibility)
-    _frontend_files(
+    native.filegroup(
         name = name + "_dev_static",
         srcs = dev_bundles + static_assets,
         visibility = visibility,

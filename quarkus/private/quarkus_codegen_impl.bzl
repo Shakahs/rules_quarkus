@@ -6,7 +6,6 @@ load("//quarkus:providers.bzl", "QuarkusCodeGenInfo")
 load("//quarkus/private:application_model_aspect.bzl", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "write_build_properties")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_runtime_classpath", "quarkus_extension_deployment_classpath_aspect")
-load("//quarkus/private:codegen_lifecycle.bzl", "QuarkusCodeGenLifecycleInfo")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
 load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
 
@@ -206,9 +205,6 @@ def _input_dirs(ctx, source_roots):
 def _effective_mode(ctx):
     if ctx.attr.mode == "test":
         return struct(model = "test", launch = "TEST", test = True)
-    lifecycle = ctx.attr._codegen_lifecycle[QuarkusCodeGenLifecycleInfo].value
-    if lifecycle == "dev":
-        return struct(model = "dev", launch = "DEVELOPMENT", test = False)
     return struct(model = "normal", launch = "NORMAL", test = False)
 
 def _quarkus_codegen_impl(ctx):
@@ -313,9 +309,6 @@ quarkus_codegen_rule = rule(
         "runtime_catalog": attr.label(allow_single_file = [".json"], mandatory = True),
         "source_roots": attr.string_list(mandatory = True),
         "srcs": attr.label_list(allow_files = True, mandatory = True),
-        "_codegen_lifecycle": attr.label(
-            default = Label("//quarkus/private:codegen_lifecycle"),
-        ),
         "_java_runtime": attr.label(
             default = "@bazel_tools//tools/jdk:current_java_runtime",
             cfg = "exec",

@@ -5,37 +5,29 @@ load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("@rules_java//java:java_test.bzl", "java_test")
 load("//quarkus/private:coverage_transition.bzl", "single_transitioned_target")
 
-_LIFECYCLE = str(Label("//quarkus/private:codegen_lifecycle"))
 _MODE = "//command_line_option:compilation_mode"
 
-def _dev_config_impl(_settings, _attr):
-    return {_LIFECYCLE: "dev", _MODE: "fastbuild"}
-
-def _test_config_impl(_settings, _attr):
-    return {_LIFECYCLE: "main", _MODE: "fastbuild"}
+def _fastbuild_config_impl(_settings, _attr):
+    return {_MODE: "fastbuild"}
 
 def _prod_config_impl(_settings, _attr):
-    return {_LIFECYCLE: "main", _MODE: "opt"}
+    return {_MODE: "opt"}
 
-_dev_config = transition(implementation = _dev_config_impl, inputs = [], outputs = [_LIFECYCLE, _MODE])
-_test_config = transition(implementation = _test_config_impl, inputs = [], outputs = [_LIFECYCLE, _MODE])
-_prod_config = transition(implementation = _prod_config_impl, inputs = [], outputs = [_LIFECYCLE, _MODE])
+_fastbuild_config = transition(implementation = _fastbuild_config_impl, inputs = [], outputs = [_MODE])
+_prod_config = transition(implementation = _prod_config_impl, inputs = [], outputs = [_MODE])
 
 def _configuration_test_impl(ctx):
     env = unittest.begin(ctx)
-    dev = single_transitioned_target(ctx.attr.dev)[JavaInfo].runtime_output_jars
-    testing = single_transitioned_target(ctx.attr.testing)[JavaInfo].runtime_output_jars
+    development = single_transitioned_target(ctx.attr.development)[JavaInfo].runtime_output_jars
     production = single_transitioned_target(ctx.attr.production)[JavaInfo].runtime_output_jars
-    asserts.equals(env, 1, len(dev))
-    asserts.equals(env, dev, testing, "Dev and tests must share the same configured resource archive")
-    asserts.false(env, dev == production, "Production must retain its separate optimized bundle")
+    asserts.equals(env, 1, len(development))
+    asserts.false(env, development == production, "Production must retain its separate optimized bundle")
     return unittest.end(env)
 
 _configuration_test = unittest.make(
     _configuration_test_impl,
     attrs = {
-        "dev": attr.label(cfg = _dev_config, providers = [JavaInfo]),
-        "testing": attr.label(cfg = _test_config, providers = [JavaInfo]),
+        "development": attr.label(cfg = _fastbuild_config, providers = [JavaInfo]),
         "production": attr.label(cfg = _prod_config, providers = [JavaInfo]),
         "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
@@ -77,8 +69,8 @@ _production_input = rule(
 )
 
 def quarkus_web_bundle_tests(name, bundle):
-    """Test cache sharing, input isolation and direct packaging of a local bundle."""
-    _configuration_test(name = name + "_configuration", dev = bundle, testing = bundle, production = bundle, tags = ["manual"])
+    """Test the optimized production bundle, input isolation and direct packaging of a local bundle."""
+    _configuration_test(name = name + "_configuration", development = bundle, production = bundle, tags = ["manual"])
     _javascript_inputs_test(name = name + "_javascript_inputs", target_under_test = bundle + "_sources")
     _archive_inputs_test(name = name + "_archive_inputs", target_under_test = bundle + "_jar", bundle_name = bundle.removeprefix(":"))
     _production_input(name = name + "_production_jar", source = bundle, tags = ["manual"], testonly = True)

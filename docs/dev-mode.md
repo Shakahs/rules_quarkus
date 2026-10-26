@@ -60,7 +60,7 @@ sequenceDiagram
 
 The manifest classpath contains two categories of jars, matching Maven's `DevMojo`:
 
-1. **Dev process infrastructure** — the transitive closures of `quarkus-bootstrap-gradle-resolver`, `quarkus-bootstrap-maven-resolver`, and `quarkus-core-deployment`, resolved separately via `@rules_quarkus//deployment:core`. This matches the roots in Quarkus Gradle's `QUARKUS_BOOTSTRAP_RESOLVER_CONFIGURATION`; the Maven plugin gets the Maven resolver from its own plugin classpath. For jars that also exist on the application classpath, the `@maven` version is preferred to avoid class identity conflicts between Coursier and `rules_jvm_external` copies.
+1. **Dev process infrastructure** — the locked closures of `quarkus-bootstrap-maven-resolver` and `quarkus-core-deployment`, as `@rules_quarkus//deployment:core`; the Maven plugin likewise gets the Maven resolver from its own plugin classpath. A jar that is also on the application classpath is taken from there: the `ApplicationModel` references that file, and a second copy of the same jar on the system classpath would break class identity across classloaders.
 
 2. **Parent-first runtime artifacts** — runtime jars flagged as `CLASSLOADER_PARENT_FIRST` in the `ApplicationModel` (logging, Jakarta APIs, etc.).
 
@@ -108,9 +108,14 @@ The `quarkus_dev` rule manages three separate classpaths:
 | `deployment_classpath` | `@rules_quarkus//deployment:all` | All deployment jars for the ApplicationModel |
 | `core_deployment_classpath` | `@rules_quarkus//deployment:core` | Bootstrap resolvers and core deployment infrastructure for the dev jar manifest |
 
-The `@rules_quarkus//deployment` package resolves these in two Coursier phases:
-1. `coursier fetch` both Quarkus bootstrap resolvers plus `quarkus-core-deployment` → `:core` target
-2. `coursier fetch` all extension deployment GAVs → `:all` target (superset of `:core`, ~300 jars)
+The `@rules_quarkus//deployment` package takes both from the workspace's Maven lock,
+downloading each jar with the lock's URL and checksum:
+1. the closures of `quarkus-bootstrap-maven-resolver` and `quarkus-core-deployment` → `:core` target
+2. the closures of every descriptor-declared deployment artifact plus `:core`'s roots → `:all` target (a superset of `:core`)
+
+Every one of these artifacts must be in the lock: repository setup fails on one it
+lacks, and on a `quarkus.toolchain(build_time_artifacts = ...)` entry that no
+descriptor names.
 
 ## Classloader Hierarchy
 
@@ -435,23 +440,13 @@ Code generation always runs through Bazel before the initial dev startup.
 The launcher watches the declared generator input directories and rebuilds the
 `<name>_dev` target, which keeps regeneration sandboxed and cacheable.
 
-Dev mode regenerates under its own lifecycle: `deps` are configured through
-`dev_lifecycle_transition`, so `quarkus_codegen` runs with launch mode
-`DEVELOPMENT` and a `dev` application model, whereas `bazel build //:app` and
-`bazel test` use `NORMAL` / `TEST`. Providers whose output depends on the launch
-mode or config profile can therefore emit different sources in dev than in a
-production or test build — worth checking first when a bug reproduces only under
-`bazel run //:app_dev`. That transition is also why the watcher always rebuilds
-the dev target itself rather than its deps: a dep built directly from the command
-line would land in the baseline output tree, which the running application
-does not run from.
-
-Because the transition changes a build setting, the dev dependency graph gets
-its own configuration. `bazel cquery 'deps(//:app_dev) intersect //:lib'` and
-the same query against `//:app` report different configuration hashes, so a
-`bazel build //...` that requests both compiles every shared dependency twice.
-That is the cost of making code generation launch-mode aware; build only
-`//:app` (or only `//:app_dev`) when the extra configuration is not wanted.
+The dev target builds its `deps` in the caller's configuration, with only
+coverage disabled, so `bazel build //:app` and `bazel run //:app_dev` share
+every compiled library and every generated source. `quarkus_codegen` therefore
+runs with launch mode `NORMAL` and a `normal` application model for the dev
+target too, and with `TEST` for test sources. A provider whose output depends on
+the launch mode or config profile emits the same sources in dev as in the
+packaged application.
 
 ### Hot-Reload Build Configuration
 
@@ -538,7 +533,7 @@ For this to work correctly, the `@rules_quarkus//deployment` package preserves t
 ### LinkageError or VerifyError on startup
 
 Check for duplicate jars across classloaders. Common causes:
-- A jar exists in both `@maven` (processed) and Coursier cache (original) with different file identities
+- A jar reaches the dev jar's manifest from `@rules_quarkus//deployment` while the application classpath holds the `@maven` copy of the same artifact
 - A jar containing CDI beans is marked as parent-first (loaded by system CL, proxy generated in runtime CL)
 - An extension-specific deployment jar leaked into the core deployment classpath
 

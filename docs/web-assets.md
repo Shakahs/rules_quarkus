@@ -28,9 +28,9 @@ Consumers own their npm lock, Node toolchain, Tailwind version and esbuild
 version. Tools must be Bazel-managed; no package manager or bundler is invoked
 from the developer's PATH. The rule does not support Quarkus Web Bundler tags.
 
-The resource-library boundary removes the Quarkus code-generation lifecycle from
-frontend actions while preserving `compilation_mode`. Thus dev and tests share
-one development link and bundle, while production remains optimized. JavaScript,
+Frontend actions build in the consumer's configuration and vary only with
+`compilation_mode`. Thus dev and tests share one development link and bundle,
+while production remains optimized. JavaScript,
 stylesheet and HTML inputs are staged separately: Tailwind scans the declared
 JavaScript and HTML trees, and esbuild depends on the compiled CSS rather than
 the HTML source. An HTML change that leaves CSS unchanged reuses the JS bundle.
@@ -89,5 +89,5 @@ The path is relative to the workspace root, the directory dev mode runs in. Brow
 production builds keep the packaged bundle.
 
 Consumers can declare `quarkus_web_bundle_tests` from `quarkus/web/defs_test.bzl`
-against a local bundle to verify lifecycle cache sharing, JavaScript input
+against a local bundle to verify the separate optimized production bundle, JavaScript input
 isolation, and direct archive packaging using their actual frontend targets.

@@ -5,7 +5,6 @@ load("@rules_java//java:java_library.bzl", "java_library")
 load("@rules_java//java:java_test.bzl", "java_test")
 load(":application_model_aspect_test.bzl", "application_model_aspect_test_suite")
 load(":build_properties_test.bzl", "build_properties_test_suite")
-load(":codegen_lifecycle.bzl", "codegen_lifecycle_setting")
 load(":codegen_metadata_test.bzl", "codegen_metadata_test_suite")
 load(":model_catalogs_test.bzl", "model_catalogs_test_suite")
 load(":quarkus_app_impl_test.bzl", "quarkus_app_impl_test_suite")
@@ -24,16 +23,9 @@ exports_files([
     "quarkus_test_impl.bzl",
     "classpath_utils.bzl",
     "coverage_transition.bzl",
-    "codegen_lifecycle.bzl",
     "quarkus_codegen_impl.bzl",
     "versions.bzl",
 ])
-
-codegen_lifecycle_setting(
-    name = "codegen_lifecycle",
-    build_setting_default = "main",
-    visibility = ["//visibility:public"],
-)
 
 java_library(
     name = "bazel_jacoco_reporter_lib",

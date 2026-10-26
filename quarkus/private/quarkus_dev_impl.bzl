@@ -23,11 +23,9 @@ load("//quarkus/private:quarkus_codegen_impl.bzl", "collect_codegen_input_dirs",
 def _hot_reload_bazel_target(ctx):
     """Returns the label the file watcher rebuilds on a source change.
 
-    This must be the dev target itself, never its deps: `deps` is configured
-    through dev_lifecycle_transition, so a dep built directly from the command
-    line lands in the baseline output tree while the application model points
-    into the transitioned one, and the running application would never see the
-    rebuild. Building the dev target re-applies the transition to the whole graph.
+    This must be the dev target itself, never its deps: building the dev target
+    rebuilds exactly what the session runs, its deps in the dev target's
+    configuration together with its dev_deps and project files.
 
     Args:
         ctx: Rule context for the dev target.

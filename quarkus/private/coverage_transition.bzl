@@ -9,30 +9,6 @@ disable_coverage_transition = transition(
     outputs = ["//command_line_option:collect_code_coverage"],
 )
 
-def _dev_lifecycle_transition_impl(_settings, _attr):
-    return {
-        "//command_line_option:collect_code_coverage": False,
-        "//quarkus/private:codegen_lifecycle": "dev",
-    }
-
-dev_lifecycle_transition = transition(
-    implementation = _dev_lifecycle_transition_impl,
-    inputs = [],
-    outputs = [
-        "//command_line_option:collect_code_coverage",
-        "//quarkus/private:codegen_lifecycle",
-    ],
-)
-
 def single_transitioned_target(value):
     """Unwraps scalar labels exposed as singleton lists by the transition."""
     return value[0] if type(value) == "list" else value
-
-def _production_compilation_transition_impl(_settings, _attr):
-    return {"//command_line_option:compilation_mode": "opt"}
-
-production_compilation_transition = transition(
-    implementation = _production_compilation_transition_impl,
-    inputs = [],
-    outputs = ["//command_line_option:compilation_mode"],
-)
