@@ -8,6 +8,13 @@ SUPPORTED_VERSIONS = {
     "3.40": "3.40.1.1",
 }
 
+# Source archives used to compile the dependency-directory indexing correction.
+# Checksums are pinned alongside the exact supported Quarkus versions.
+CORE_DEPLOYMENT_SOURCES_SHA256 = {
+    "3.39.5": "3f19a9ff67df49f38a74f4d182bfd779a9141315321f467bb9d6994c9e005d0a",
+    "3.40.1.1": "5367eb371f39da3446686f741fa7e4d7be41c6ca949822ac967f483fbf0ee69e",
+}
+
 # Version of rules_quarkus itself — must match the version in MODULE.bazel.
 # Updated automatically by the release process (release_prep.sh).
 _RULES_VERSION = "$Format:%(describe:tags=true)$"

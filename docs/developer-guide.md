@@ -65,7 +65,12 @@ bazel build //...
 ```bash
 bazel test //quarkifier:quarkifier_test_3_39
 bazel test //quarkifier:quarkifier_test_3_40
+bazel test //quarkifier:workspace_classes_merger_test
 ```
+
+From a consumer workspace, `bazel test @rules_quarkus//deployment:directory_indexing_test`
+checks the patched Quarkus artifact: saved directory indexes are reused, archives
+without indexes are indexed, and resource exclusions force reindexing.
 
 ### Smoke test (e2e)
 

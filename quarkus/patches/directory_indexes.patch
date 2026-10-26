@@ -1,0 +1,34 @@
+--- a/deployment/indexing/io/quarkus/deployment/index/ApplicationArchiveBuildStep.java
++++ b/deployment/indexing/io/quarkus/deployment/index/ApplicationArchiveBuildStep.java
+@@ -323,30 +323,3 @@
+     private static Index indexPathTree(OpenPathTree tree, Set<String> removed) throws IOException {
+-        List<Path> classFilesToIndex = new ArrayList<>();
+-        tree.walk(new PathVisitor() {
+-            @Override
+-            public void visitPath(PathVisit visit) {
+-                final Path path = visit.getPath();
+-                final Path fileName = path.getFileName();
+-                if (fileName == null
+-                        || !fileName.toString().endsWith(".class")
+-                        || Files.isDirectory(path)
+-                        || removed != null && removed.contains(visit.getRelativePath("/"))) {
+-                    return;
+-                }
+-                classFilesToIndex.add(path);
+-            }
+-        });
+-
+-        // feed classes to the `Indexer` in deterministic order
+-        classFilesToIndex.sort(Comparator.comparing(Path::toString));
+-
+-        Indexer indexer = new Indexer();
+-        for (Path path : classFilesToIndex) {
+-            try (InputStream in = Files.newInputStream(path)) {
+-                indexer.index(in);
+-            } catch (IOException e) {
+-                throw new RuntimeException(e);
+-            }
+-        }
+-        return indexer.complete();
++        return IndexingUtil.indexTree(tree, removed);
+     }

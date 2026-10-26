@@ -9,7 +9,7 @@ Produces a single generated repository (@rules_quarkus) containing:
   - deployment/: Maven-locked deployment jars
 """
 
-load("//quarkus/private:versions.bzl", "MAVEN_CENTRAL", "SUPPORTED_VERSIONS")
+load("//quarkus/private:versions.bzl", "CORE_DEPLOYMENT_SOURCES_SHA256", "MAVEN_CENTRAL", "SUPPORTED_VERSIONS")
 
 # ---- Version helpers ----
 
@@ -278,6 +278,8 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
     downloads = []
     repo_paths = {}
     seen = {}
+    indexing_patch = None
+    indexing_targets = []
     for artifact in all_jars:
         relative_jar_path = artifact.relative_path
         target_name = _jar_target_name(relative_jar_path)
@@ -303,12 +305,29 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
 
         dest_path = subdir + "/" + jar_repo_path
         downloads.append(struct(output = dest_path, sha256 = artifact.sha256, url = artifact.url))
-        repo_paths[relative_jar_path] = dest_path
-
-        imports.append(
-            'java_import(name = "{n}", jars = ["{j}"], visibility = ["//visibility:public"])'.format(n = target_name, j = jar_repo_path),
-        )
+        if subdir == "deployment" and relative_jar_path.startswith("io/quarkus/quarkus-core-deployment/"):
+            indexing_patch = struct(name = target_name, jar = jar_repo_path, path = relative_jar_path)
+            repo_paths[relative_jar_path] = subdir + "/jars/patched/" + relative_jar_path
+            imports.append('java_import(name = "{n}_unpatched", jars = ["{j}"])'.format(n = target_name, j = jar_repo_path))
+        else:
+            repo_paths[relative_jar_path] = dest_path
+            imports.append(
+                'java_import(name = "{n}", jars = ["{j}"], visibility = ["//visibility:public"])'.format(n = target_name, j = jar_repo_path),
+            )
         all_targets.append('":{}"'.format(target_name))
+        if "/".join(relative_jar_path.split("/")[:-2]) in [
+            "io/quarkus/quarkus-core-deployment",
+            "io/quarkus/quarkus-core",
+            "io/quarkus/quarkus-builder",
+            "io/quarkus/quarkus-bootstrap-app-model",
+            "io/quarkus/quarkus-bootstrap-core",
+            "io/quarkus/quarkus-fs-util",
+            "io/smallrye/jandex",
+            "io/smallrye/config/smallrye-config-core",
+            "io/smallrye/config/smallrye-config-common",
+            "org/jboss/logging/jboss-logging",
+        ]:
+            indexing_targets.append('":{}"'.format(target_name))
         if core_jar_set and relative_jar_path in core_jar_set:
             core_targets.append('":{}"'.format(target_name))
 
@@ -339,6 +358,19 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
 
     _download_locked_artifacts(rctx, downloads)
 
+    if indexing_patch != None:
+        _prepare_directory_indexing_patch(rctx)
+        compile_deps = [
+            target.replace(indexing_patch.name + '"', indexing_patch.name + '_unpatched"')
+            for target in indexing_targets
+        ]
+        imports.extend([
+            'java_library(name = "directory_indexing_classes", srcs = ["indexing/io/quarkus/deployment/index/ApplicationArchiveBuildStep.java"], deps = [{}])'.format(", ".join(compile_deps)),
+            'java_single_jar(name = "directory_indexing_jar", deps = [":libdirectory_indexing_classes.jar", "{j}"], output = "jars/patched/{p}")'.format(j = indexing_patch.jar, p = indexing_patch.path),
+            'java_import(name = "{n}", jars = [":directory_indexing_jar"])'.format(n = indexing_patch.name),
+            'java_test(name = "directory_indexing_test", srcs = ["@com_clementguillot_rules_quarkus//quarkus/patches:DirectoryIndexTest.java"], main_class = "org.junit.platform.console.ConsoleLauncher", use_testrunner = False, jvm_flags = ["-Djava.util.logging.manager=org.jboss.logmanager.LogManager"], args = ["execute", "--select-class=io.quarkus.deployment.index.DirectoryIndexTest", "--fail-if-no-tests"], deps = [{deps}, "@com_clementguillot_rules_quarkus//quarkus/patches:junit_{minor}"])'.format(deps = ", ".join(indexing_targets), minor = _sanitize_version(_extract_minor_version(rctx.attr.quarkus_version))),
+        ])
+
     libraries = [
         'java_library(name = "all", exports = [{}])'.format(", ".join(all_targets)),
         'filegroup(name = "artifacts", srcs = [{}])'.format(", ".join(artifact_files)),
@@ -349,6 +381,8 @@ def _write_jar_build(rctx, subdir, all_jars, core_jar_set = None, extra_artifact
     rctx.file(subdir + "/BUILD.bazel", content = """\
 load("@rules_java//java:java_import.bzl", "java_import")
 load("@rules_java//java:java_library.bzl", "java_library")
+load("@rules_java//java:java_single_jar.bzl", "java_single_jar")
+load("@rules_java//java:java_test.bzl", "java_test")
 package(default_visibility = ["//visibility:public"])
 {imports}
 {libraries}
@@ -357,6 +391,18 @@ package(default_visibility = ["//visibility:public"])
         libraries = "\n".join(libraries),
     ))
     return repo_paths
+
+def _prepare_directory_indexing_patch(rctx):
+    """Compiles the approved Quarkus directory-index fix from pinned upstream sources."""
+    version = rctx.attr.quarkus_version
+    source_path = "io/quarkus/quarkus-core-deployment/{v}/quarkus-core-deployment-{v}-sources.jar".format(v = version)
+    rctx.download_and_extract(
+        url = [repository.removesuffix("/") + "/" + source_path for repository in rctx.attr.artifact_repositories],
+        sha256 = CORE_DEPLOYMENT_SOURCES_SHA256[version],
+        type = "zip",
+        output = "deployment/indexing",
+    )
+    rctx.patch(rctx.attr._directory_indexes_patch, strip = 1)
 
 def _write_deployment_build(rctx, all_jars, core_jar_set, extra_artifacts = []):
     """Copies resolved jars into deployment/ and writes its BUILD file."""
@@ -1283,6 +1329,7 @@ def _rules_quarkus_repo_impl(rctx):
       - model/: the runtime, deployment, conditional, and platform catalogs
       - deployment/: java_library targets for deployment jars
     """
+
     # A Quarkus patch upgrade changes the application's Maven inputs and the exact
     # deployment coordinates together. `REPIN=1 bazel run @maven//:pin` must be able
     # to produce that new lock before descriptor validation reads it; otherwise the
@@ -1342,6 +1389,7 @@ _rules_quarkus_repo = repository_rule(
             doc = "Maven coordinate keys mapped to target names when maven.override replaces a locked artifact.",
         ),
         "quarkus_version": attr.string(mandatory = True, doc = "Quarkus version."),
+        "_directory_indexes_patch": attr.label(default = Label("//quarkus/patches:directory_indexes.patch")),
     },
     environ = ["REPIN"],
 )

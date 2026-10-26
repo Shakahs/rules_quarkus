@@ -1,11 +1,38 @@
 load("@rules_java//java:java_binary.bzl", "java_binary")
+load("@rules_java//java:java_library.bzl", "java_library")
+load("@rules_java//java:java_test.bzl", "java_test")
 load("//quarkifier:quarkifier.bzl", "quarkifier_targets")
+
+java_library(
+    name = "workspace_classes_merger_lib",
+    srcs = ["workspace_classes_merger/WorkspaceClassesMerger.java"],
+    # Both supported Quarkus versions use Jandex 3.6.0 and read the same index format.
+    deps = ["@maven_3_39//:io_smallrye_jandex"],
+)
 
 java_binary(
     name = "workspace_classes_merger",
-    srcs = ["workspace_classes_merger/WorkspaceClassesMerger.java"],
     main_class = "com.clementguillot.quarkifier.workspace.WorkspaceClassesMerger",
     visibility = ["//quarkus/private:__pkg__"],
+    runtime_deps = [":workspace_classes_merger_lib"],
+)
+
+java_test(
+    name = "workspace_classes_merger_test",
+    srcs = ["workspace_classes_merger/WorkspaceClassesMergerTest.java"],
+    args = [
+        "execute",
+        "--select-class=com.clementguillot.quarkifier.workspace.WorkspaceClassesMergerTest",
+        "--fail-if-no-tests",
+    ],
+    main_class = "org.junit.platform.console.ConsoleLauncher",
+    use_testrunner = False,
+    deps = [
+        ":workspace_classes_merger_lib",
+        "@maven_3_39//:io_smallrye_jandex",
+        "@maven_3_39//:org_junit_jupiter_junit_jupiter",
+        "@maven_3_39//:org_junit_platform_junit_platform_console_standalone",
+    ],
 )
 
 # Per-minor quarkifier targets.

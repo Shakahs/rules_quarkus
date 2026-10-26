@@ -1,0 +1,28 @@
+load("@rules_java//java:java_library.bzl", "java_library")
+
+exports_files([
+    "DirectoryIndexTest.java",
+    "directory_indexes.patch",
+])
+
+java_library(
+    name = "junit_3_39",
+    testonly = True,
+    visibility = ["//visibility:public"],
+    exports = [
+        "@maven_3_39//:org_junit_jupiter_junit_jupiter",
+        "@maven_3_39//:org_junit_platform_junit_platform_console_standalone",
+    ],
+    runtime_deps = ["@maven_3_39//:org_jboss_logmanager_jboss_logmanager"],
+)
+
+java_library(
+    name = "junit_3_40",
+    testonly = True,
+    visibility = ["//visibility:public"],
+    exports = [
+        "@maven_3_40//:org_junit_jupiter_junit_jupiter",
+        "@maven_3_40//:org_junit_platform_junit_platform_console_standalone",
+    ],
+    runtime_deps = ["@maven_3_40//:org_jboss_logmanager_jboss_logmanager"],
+)

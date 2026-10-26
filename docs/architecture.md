@@ -107,6 +107,22 @@ all use this boundary; only lifecycle-specific root/test facts differ.
 See [ADR 0001](adr/0001-explicit-application-model.md) for the ownership and DX
 invariants.
 
+The aspect normalizes each workspace target's runtime JARs into a canonical
+class directory. For archives already marked with `META-INF/beans.xml` or an
+input Jandex index, this action generates `META-INF/jandex.idx` using the locked
+Jandex library. It indexes the merged classes in deterministic order, replacing
+partial indexes from language-specific input JARs. Unmarked archives stay
+unindexed: adding an index would change Quarkus's archive discovery. Bazel
+caches the directory and its index together. The supported Quarkus versions
+ignore saved indexes on the directory path in `ApplicationArchiveBuildStep`.
+The generated deployment repository applies `quarkus/patches/directory_indexes.patch`
+to checksum-pinned upstream sources, compiles that class against the locked
+deployment dependencies and uses `java_single_jar` to replace it in the original
+deployment JAR. The correction delegates to Quarkus's existing `IndexingUtil.indexTree`:
+compatible saved indexes are read; directories without indexes and directories
+with resource exclusions are indexed by Quarkus. Quarkus still owns
+application-root indexing, augmentation and runtime initialization.
+
 ## Build Flow
 
 ```mermaid
