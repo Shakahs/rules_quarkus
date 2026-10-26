@@ -205,10 +205,19 @@ mkdir -p "$TEST_PROJECT_DIR/src/main" "$TEST_PROJECT_DIR/target"
 # follow the Maven Failsafe-compatible *IT convention.
 TEST_ARGS="%{test_args}"
 JAR_CMD="${WORKSPACE_DIR}/%{java_home}/bin/jar"
-if ! echo "$TEST_ARGS" | grep -q '\-\-select-\|--scan-'; then
+# The class files of a local entry, relative to its root: a direct dep is presented by its
+# canonical class directory, an extension's runtime by its jar.
+_class_entries() {
+  if [ -d "$1" ]; then
+    (cd "$1" && find . -name '*.class' | sed 's|^\./||')
+  else
+    "$JAR_CMD" tf "$1" 2>/dev/null
+  fi
+}
+if ! echo "$TEST_ARGS" | grep -q -e '--select-' -e '--scan-'; then
   while IFS=, read -ra JAR_ENTRIES; do
     for jar_path in "${JAR_ENTRIES[@]}"; do
-      if [ -f "$jar_path" ]; then
+      if [ -e "$jar_path" ]; then
         while IFS= read -r cls; do
           cls="${cls%.class}"
           cls="${cls//\//.}"
@@ -219,7 +228,7 @@ if ! echo "$TEST_ARGS" | grep -q '\-\-select-\|--scan-'; then
               ! echo "$cls" | grep -qE 'IT$'; then
             TEST_ARGS="${TEST_ARGS} --select-class=${cls}"
           fi
-        done < <("$JAR_CMD" tf "$jar_path" 2>/dev/null | grep '\.class$' | grep -v '\$')
+        done < <(_class_entries "$jar_path" | grep '\.class$' | grep -v '\$')
       fi
     done
   done < "$DIRECT_JARS_FILE"
