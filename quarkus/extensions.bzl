@@ -1258,7 +1258,7 @@ def _rules_quarkus_repo_impl(rctx):
 
     Contains:
       - quarkus/defs.bzl: public macros
-      - quarkifier/tool.jar: the quarkifier deploy jar
+      - model/: the runtime, deployment, conditional, and platform catalogs
       - deployment/: java_library targets for deployment jars
     """
     # A Quarkus patch upgrade changes the application's Maven inputs and the exact

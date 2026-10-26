@@ -75,10 +75,15 @@ different `MODULE.bazel` configurations.
 | Attribute | Default | Description |
 |---|---|---|
 | `quarkus_version` | (required) | Quarkus version: `"3.39.5"` or `"3.40.1.1"` |
-| `lock_file` | `None` | Path to `maven_install.json` for extension auto-discovery |
-| `extension_group_prefixes` | `["io.quarkus", "io.quarkiverse."]` | Deprecated compatibility option; descriptor discovery no longer filters by groupId |
-| `quarkifier_source_dir` | `None` | Label in the rules_quarkus source dir for local dev builds |
-| `quarkifier_sha256` | `""` | SHA-256 pin for the quarkifier jar download. Released versions carry their own checksums, so this is only needed with `git_override`/`archive_override` (the build prints the hash to pin when verification is off) |
+| `lock_file` | (required) | rules_jvm_external v3 `maven_install.json`: the only source of artifacts, versions, and the dependency graph |
+| `build_time_artifacts` | `[]` | Artifacts added to `maven.install` only because Quarkus descriptors name them (deployment artifacts, conditional dependencies, the dev-mode bootstrap), as `groupId:artifactId` or `groupId:artifactId:version`. Repository setup fails on an entry the lock lacks or no descriptor names |
+| `artifact_repositories` | Maven Central | Maven repositories holding every artifact in `lock_file` |
+| `platform_boms` | `["io.quarkus.platform:quarkus-bom:<version>"]` | Quarkus platform BOM imports as `groupId:artifactId:version` |
+| `platform_properties` | `{}` | Additional or overriding Quarkus platform properties |
+| `runtime_target_overrides` | `{}` | Maven coordinate keys mapped to the Bazel targets a `maven.override` supplies them from |
+
+Every deployment artifact a scanned descriptor names must be in the lock; setup
+fails with the coordinate to add to `maven.install` and repin.
 
 ## 4. Create Your Application
 

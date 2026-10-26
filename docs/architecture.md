@@ -16,8 +16,9 @@
 | Quarkifier as a separate Java binary | Isolates Quarkus deployment classpath from the user's build classpath; can be versioned independently |
 | Fast JAR as default, with every Quarkus JVM layout selectable | Keeps the recommended default while exposing Uber, mutable, legacy, and AOT JARs as ordinary Bazel targets |
 | Explicit ApplicationModel | A Bazel aspect and resolver catalogs preserve graph/workspace facts before a version-specific Java adapter applies Quarkus semantics |
-| Deployment artifact auto-resolution via descriptors + Coursier | Module extension scans locked jars for exact `deployment-artifact` coordinates and resolves their transitive graph |
-| One generated repository from module extension | Keeps generated rules, the versioned Quarkifier, model catalogs, and copied deployment artifacts under `@rules_quarkus` |
+| Deployment artifact auto-resolution via descriptors and the lock | Module extension scans the lock's runtime closure for exact `deployment-artifact` coordinates and takes their closures from the same lock |
+| One generated repository from module extension | Keeps generated rules, model catalogs, and the locked deployment artifacts under `@rules_quarkus` |
+| Quarkifier built from source | Each version's deploy jar is a target of this module, built in the application's own graph rather than downloaded |
 | Post-processing of Fast_Jar output | Quarkus augmentation output uses raw classpath filenames; post-processing normalizes jar names, classifies boot vs main, and regenerates metadata |
 
 ## Three-Layer Architecture
@@ -78,19 +79,16 @@ A single generated repository containing everything needed to build Quarkus appl
 
 - **`quarkus/defs.bzl`** — public API macros (`quarkus_app`, `quarkus_test`,
   `quarkus_integration_test`) with toolchain-specific defaults injected
-  (Quarkus version, quarkifier tool path, deployment deps)
-- **`quarkifier/tool.jar`** — the quarkifier deploy jar, resolved in priority order:
-  1. **Local source build** — user provides `quarkifier_source_dir`, the extension builds and symlinks the deploy jar
-  2. **GitHub release download** — fetches from `https://github.com/clementguillot/rules_quarkus/releases/`
+  (Quarkus version, the `//quarkifier:quarkifier_<minor>_deploy.jar` target of this
+  module, deployment deps)
 - **`model/`** — strict runtime, deployment, and platform catalogs used by the hermetic model-assembly action
-- **`deployment/`** — deployment jars downloaded with transitive dependencies using Coursier. Extension runtime jars pinned by `maven_install.json` are scanned for `META-INF/quarkus-extension.properties`; the exact descriptor-declared deployment coordinate is resolved without artifact-name guessing. Produces two `java_library` targets:
-  - `:core` — transitive deps of `quarkus-core-deployment` (used for the dev jar manifest classpath)
+- **`deployment/`** — deployment jars and their closures, taken from the workspace's `maven_install.json`. The lock's runtime closure is scanned for `META-INF/quarkus-extension.properties`; each exact descriptor-declared deployment coordinate must be in the lock, so nothing is resolved outside it or guessed from artifact names. Produces two `java_library` targets:
+  - `:core` — the closures of `quarkus-bootstrap-maven-resolver` and `quarkus-core-deployment` (used for the dev jar manifest classpath)
   - `:all` — all deployment jars including extension-specific deployment jars and conditional dev dependencies
 
-Deployment jars are copied into the generated repository in Maven directory
-layout. Copying makes them stable Bazel inputs even if the machine-global
-Coursier cache changes, while retaining the layout needed by Dev UI version
-extraction.
+Deployment jars are downloaded straight into the generated repository, each with
+the lock's URL and checksum, in Maven directory layout: that is the layout Dev UI
+version extraction needs.
 
 ## Explicit ApplicationModel flow
 

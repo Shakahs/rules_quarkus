@@ -34,22 +34,28 @@ The ownership boundary is:
 |---|---|
 | Local targets, direct edges, source/resource inputs, outputs, build files | Bazel aspect |
 | External artifact identity, selected version, and physical target | `maven_install.json` v3 lock |
-| Maven-faithful runtime membership and optionality | pinned Coursier resolution intersected with the lock |
+| Runtime membership and edges | the lock's `dependencies` graph |
 | Deployment roots | exact `deployment-artifact` values from extension descriptors |
-| Deployment closure | pinned Coursier JSON graph |
+| Deployment closure | the lock's `dependencies` graph from those roots |
 | Quarkus flags, platforms, capabilities, and descriptor semantics | version-specific Java adapter |
 
-The runtime catalog is deliberately hybrid:
+The runtime catalog comes from the lock alone:
 
 1. the rules_jvm_external lock is authoritative for selected versions, Bazel
-   target names, artifact files, and explicit exclusions;
-2. Coursier supplies Maven graph semantics that the v3 lock flattens or loses;
-3. Coursier artifacts absent from the lock are discarded, so resolution cannot
-   undo an explicit Bazel exclusion;
-4. Bazel relationships between two artifacts already retained by resolver
-   reachability remain available, preserving path contexts that a flattened
-   Coursier report can merge away;
-5. no artifact is admitted by a name convention or orphan-repair step.
+   target names, artifact files, explicit exclusions, and the edges between
+   artifacts;
+2. an artifact the lock does not hold is never resolved, so nothing can undo
+   an explicit Bazel exclusion; the build-time artifacts descriptors name must
+   be added to the lock, and any that `quarkus.toolchain(build_time_artifacts
+   = ...)` declares are validated against the descriptors;
+3. extension descriptors are scanned across the lock's whole runtime closure,
+   since Quarkus reads them from transitive extensions too;
+4. no artifact is admitted by a name convention or orphan-repair step.
+
+Amended: this record first paired the lock with a pinned Coursier resolution
+for Maven graph semantics the v3 lock flattens, such as optionality. That
+resolution was removed; the graph is the lock's, and every node is
+non-optional.
 
 All normal, dev, test, and native-sources entry points assemble the same
 contract with a lifecycle mode. Internal target suffixes such as `_dev` and
@@ -113,8 +119,8 @@ Positive consequences:
 
 Costs and bounded differences:
 
-- repository setup performs a pinned Coursier resolution in addition to
-  rules_jvm_external lock loading;
+- the lock does not record Maven optionality, so every artifact it holds is a
+  non-optional node;
 - rules_jvm_external v3 does not retain every Maven edge scope, so the adapter
   uses an explicit conservative compile fallback where no Bazel fact exists;
 - a dependency edge removed by the pinned Bazel graph is not recreated merely

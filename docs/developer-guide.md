@@ -81,19 +81,14 @@ the module extension end-to-end.
 
 ## Testing with the Examples Workspace
 
-The `examples/` directory contains separate Bazel workspaces per Quarkus version that use `rules_quarkus` via `local_path_override`. They require the deploy jar to be built first:
+The `examples/` directory contains separate Bazel workspaces per Quarkus version that use `rules_quarkus` via `local_path_override`. Each builds the matching `//quarkifier:quarkifier_<minor>_deploy.jar` from this checkout as part of its own graph:
 
 ```bash
-# 1. Build the deploy jar in the root workspace
-bazel build //quarkifier:quarkifier_3_39_deploy.jar
-
-# 2. Run the 3.39 example
 cd examples/helloworld_3_39
 bazel run //:helloworld    # Production mode
 bazel run //:helloworld_dev   # Dev mode
 
 # Or for 3.40:
-bazel build //quarkifier:quarkifier_3_40_deploy.jar
 cd examples/helloworld_3_40
 bazel run //:helloworld    # Production mode
 bazel run //:helloworld_dev   # Dev mode
@@ -106,13 +101,13 @@ bazel_dep(name = "com_clementguillot_rules_quarkus", version = "0.0.0")
 local_path_override(module_name = "com_clementguillot_rules_quarkus", path = "../..")
 ```
 
-And `quarkifier_source_dir` to resolve the local deploy jar:
+Its `maven_install.json` must hold the build-time artifacts the extension descriptors name (deployment artifacts, conditional dependencies, and the dev-mode bootstrap), which `build_time_artifacts` may declare so repository setup validates them:
 
 ```starlark
 quarkus.toolchain(
     quarkus_version = "3.40.1.1",  # or "3.39.5"
     lock_file = "//:maven_install.json",
-    quarkifier_source_dir = "@com_clementguillot_rules_quarkus//:MODULE.bazel",
+    build_time_artifacts = ["io.quarkus:quarkus-rest-deployment", ...],
 )
 ```
 

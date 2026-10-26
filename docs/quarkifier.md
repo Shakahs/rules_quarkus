@@ -316,7 +316,7 @@ Extracts `groupId`/`artifactId`/`version` from jar file paths. Handles multiple 
 |---|---|
 | Standard Maven repo | `.../io/quarkus/quarkus-arc/3.27.4/quarkus-arc-3.27.4.jar` |
 | Bazel `processed_` prefix | `.../processed_quarkus-arc-3.27.4.jar` |
-| Coursier cache (short) | `jars/quarkus-arc-3.27.4.jar` |
+| Flat jar directory | `jars/quarkus-arc-3.27.4.jar` |
 
 Uses stop segments (`external`, `v1`, `https`, `maven`, etc.) to identify where groupId segments begin when walking backwards from the filename.
 
