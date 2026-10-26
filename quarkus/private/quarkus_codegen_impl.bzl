@@ -3,7 +3,7 @@
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusCodeGenInfo")
-load("//quarkus/private:application_model_aspect.bzl", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "write_build_properties")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_runtime_classpath", "quarkus_extension_deployment_classpath_aspect")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
@@ -251,6 +251,8 @@ def _quarkus_codegen_impl(ctx):
         inputs = depset(
             direct = [ctx.file.quarkifier_tool, model, properties] + ctx.files.srcs + ctx.files.resources + ctx.files.deployment_artifacts,
             transitive = [
+                # Every artifact the model names, its local targets' class directories among them.
+                collect_all_model_artifacts(ctx.attr.deps),
                 runtime_classpath,
                 conditional_classpath,
                 deployment_classpath,
