@@ -21,26 +21,26 @@ bazel_dep(name = "rules_jvm_external", version = "6.10")
 # Maven lock through maven.install, and quarkus.toolchain checks that a descriptor in
 # the lock names each one.
 QUARKUS_BUILD_TIME_ARTIFACTS = [
-    "io.quarkus:quarkus-arc-deployment:3.40.1",
-    "io.quarkus:quarkus-devui-deployment:3.40.1",
-    "io.quarkus:quarkus-jacoco-deployment:3.40.1",
-    "io.quarkus:quarkus-rest-deployment:3.40.1",
-    "io.quarkus:quarkus-rest-kotlin-deployment:3.40.1",
-    "io.quarkus:quarkus-arc-dev:3.40.1",
-    "io.quarkus:quarkus-devui:3.40.1",
-    "io.quarkus:quarkus-rest-dev:3.40.1",
-    "io.quarkus:quarkus-rest-kotlin:3.40.1",
-    "io.quarkus:quarkus-bootstrap-maven-resolver:3.40.1",
+    "io.quarkus:quarkus-arc-deployment:3.40.1.1",
+    "io.quarkus:quarkus-devui-deployment:3.40.1.1",
+    "io.quarkus:quarkus-jacoco-deployment:3.40.1.1",
+    "io.quarkus:quarkus-rest-deployment:3.40.1.1",
+    "io.quarkus:quarkus-rest-kotlin-deployment:3.40.1.1",
+    "io.quarkus:quarkus-arc-dev:3.40.1.1",
+    "io.quarkus:quarkus-devui:3.40.1.1",
+    "io.quarkus:quarkus-rest-dev:3.40.1.1",
+    "io.quarkus:quarkus-rest-kotlin:3.40.1.1",
+    "io.quarkus:quarkus-bootstrap-maven-resolver:3.40.1.1",
 ]
 
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
-        "io.quarkus:quarkus-rest:3.40.1",
-        "io.quarkus:quarkus-arc:3.40.1",
+        "io.quarkus:quarkus-rest:3.40.1.1",
+        "io.quarkus:quarkus-arc:3.40.1.1",
         # Test dependencies
-        "io.quarkus:quarkus-junit:3.40.1",
-        "io.quarkus:quarkus-jacoco:3.40.1",
+        "io.quarkus:quarkus-junit:3.40.1.1",
+        "io.quarkus:quarkus-jacoco:3.40.1.1",
         "io.rest-assured:rest-assured:5.5.6",
         "org.junit.jupiter:junit-jupiter:5.13.4",
         "org.junit.platform:junit-platform-console-standalone:1.13.4",
@@ -58,6 +58,6 @@ quarkus = use_extension("@com_clementguillot_rules_quarkus//quarkus:extensions.b
 quarkus.toolchain(
     build_time_artifacts = QUARKUS_BUILD_TIME_ARTIFACTS,
     lock_file = "//:maven_install.json",
-    quarkus_version = "3.40.1",
+    quarkus_version = "3.40.1.1",
 )
 use_repo(quarkus, "rules_quarkus")

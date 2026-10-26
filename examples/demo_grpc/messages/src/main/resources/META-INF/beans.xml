@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Marks the generated gRPC and Avro classes for Quarkus indexing: the applications
+     inject the generated Mutiny clients, which Quarkus finds only in indexed archives. -->
+<beans xmlns="https://jakarta.ee/xml/ns/jakartaee" bean-discovery-mode="annotated" version="4.0"/>

@@ -15,25 +15,53 @@ bazel_dep(name = "rules_go", version = "0.61.0", repo_name = "rules_go")
 bazel_dep(name = "rules_java", version = "9.6.1")
 bazel_dep(name = "rules_jvm_external", version = "6.10")
 
+# The artifacts Quarkus extension descriptors name, which Maven cannot reach from the
+# application's own dependencies: each runtime extension's deployment artifact, the
+# extensions they activate conditionally, and the dev-mode bootstrap. They go into the
+# Maven lock through maven.install, and quarkus.toolchain checks that a descriptor in
+# the lock names each one.
+QUARKUS_BUILD_TIME_ARTIFACTS = [
+    "io.quarkus:quarkus-arc-deployment:3.40.1.1",
+    "io.quarkus:quarkus-devui-deployment:3.40.1.1",
+    "io.quarkus:quarkus-rest-deployment:3.40.1.1",
+    "io.quarkus:quarkus-rest-kotlin-deployment:3.40.1.1",
+    "io.quarkus:quarkus-arc-dev:3.40.1.1",
+    "io.quarkus:quarkus-devui:3.40.1.1",
+    "io.quarkus:quarkus-rest-dev:3.40.1.1",
+    "io.quarkus:quarkus-rest-kotlin:3.40.1.1",
+    "io.quarkus:quarkus-rest-data-hibernate-json-types:3.40.1.1",
+    "io.quarkus:quarkus-rest-data-hibernate-json-types-deployment:3.40.1.1",
+    "io.quarkus:quarkus-flyway-postgresql:3.40.1.1",
+    "io.quarkus:quarkus-flyway-postgresql-deployment:3.40.1.1",
+    "io.quarkus:quarkus-bootstrap-maven-resolver:3.40.1.1",
+    "io.quarkus:quarkus-rest-jackson-deployment:3.40.1.1",
+    "io.quarkus:quarkus-hibernate-orm-panache-deployment:3.40.1.1",
+    "io.quarkus:quarkus-jdbc-postgresql-deployment:3.40.1.1",
+    "io.quarkus:quarkus-narayana-jta-deployment:3.40.1.1",
+    "io.quarkus:quarkus-avro-deployment:3.40.1.1",
+    "io.quarkus:quarkus-grpc-deployment:3.40.1.1",
+    "io.quarkus:quarkus-smallrye-openapi-deployment:3.40.1.1",
+]
+
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
-        "io.quarkus:quarkus-arc:3.40.1",
-        "io.quarkus:quarkus-avro:3.40.1",
-        "io.quarkus:quarkus-grpc:3.40.1",
-        "io.quarkus:quarkus-hibernate-orm-panache:3.40.1",
-        "io.quarkus:quarkus-jdbc-postgresql:3.40.1",
-        "io.quarkus:quarkus-narayana-jta:3.40.1",
-        "io.quarkus:quarkus-rest:3.40.1",
-        "io.quarkus:quarkus-rest-jackson:3.40.1",
-        "io.quarkus:quarkus-smallrye-openapi:3.40.1",
+        "io.quarkus:quarkus-arc:3.40.1.1",
+        "io.quarkus:quarkus-avro:3.40.1.1",
+        "io.quarkus:quarkus-grpc:3.40.1.1",
+        "io.quarkus:quarkus-hibernate-orm-panache:3.40.1.1",
+        "io.quarkus:quarkus-jdbc-postgresql:3.40.1.1",
+        "io.quarkus:quarkus-narayana-jta:3.40.1.1",
+        "io.quarkus:quarkus-rest:3.40.1.1",
+        "io.quarkus:quarkus-rest-jackson:3.40.1.1",
+        "io.quarkus:quarkus-smallrye-openapi:3.40.1.1",
         # Test dependencies
-        "io.quarkus:quarkus-junit:3.40.1",
+        "io.quarkus:quarkus-junit:3.40.1.1",
         "io.rest-assured:rest-assured:5.5.6",
         "org.junit.jupiter:junit-jupiter:5.13.4",
         "org.junit.platform:junit-platform-console-standalone:1.13.4",
         "org.junit.platform:junit-platform-launcher:1.13.4",
-    ],
+    ] + QUARKUS_BUILD_TIME_ARTIFACTS,
     known_contributing_modules = ["protobuf"],
     lock_file = "//:maven_install.json",
 )
@@ -41,7 +69,8 @@ use_repo(maven, "maven")
 
 quarkus = use_extension("@com_clementguillot_rules_quarkus//quarkus:extensions.bzl", "quarkus")
 quarkus.toolchain(
+    build_time_artifacts = QUARKUS_BUILD_TIME_ARTIFACTS,
     lock_file = "//:maven_install.json",
-    quarkus_version = "3.40.1",
+    quarkus_version = "3.40.1.1",
 )
 use_repo(quarkus, "rules_quarkus")

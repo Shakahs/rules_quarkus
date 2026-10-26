@@ -13,6 +13,8 @@ quarkus_java_library(
         "src/main/avro/audit-event.avsc",
         "src/main/proto/item.proto",
     ],
+    resources = ["src/main/resources/META-INF/beans.xml"],
+    resource_strip_prefix = "messages/src/main/resources",
     visibility = ["//visibility:public"],
     deps = [
         "@maven//:com_google_guava_guava",

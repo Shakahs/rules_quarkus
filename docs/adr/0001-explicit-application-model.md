@@ -101,7 +101,7 @@ The explicit transport is strict:
 - intentional differences use exact-value SHA-256 allowlists, so a value change
   makes the approval stale.
 
-The certified matrix covers the Quarkus 3.39.5 and 3.40.1 adapters and Bazel 7.7.1,
+The certified matrix covers the Quarkus 3.39.5 and 3.40.1.1 adapters and Bazel 7.7.1,
 8.x, and 9.x. Full lifecycle coverage includes normal augmentation, dev-mode
 boot, test bootstrap, and native-sources augmentation.
 
