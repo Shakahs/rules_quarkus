@@ -394,9 +394,34 @@ quarkus_app(
 | `legacy-jar` | `quarkus-run.jar` | Deprecated pre-1.12 thin-JAR layout |
 | `aot-jar` | `quarkus-app/quarkus-run.jar` | System-classloader layout used for AOT-cache workflows |
 
-`aot-jar` selects the AOT-compatible package layout. It does not train or
-embed an `app.aot` cache; cache generation remains a separate, JDK-specific
-workflow.
+`aot-jar` selects the AOT-compatible package layout. To have Quarkus generate
+its Leyden cache in the augmentation action, use JDK 25 or newer and declare:
+
+```starlark
+quarkus_app(
+    name = "helloworld_aot",
+    package_type = "aot-jar",
+    build_properties = {
+        "quarkus.package.jar.aot.enabled": "true",
+        "quarkus.package.jar.aot.type": "aot",
+        "quarkus.package.jar.aot.phase": "build",
+    },
+    deps = [":lib"],
+)
+```
+
+`quarkus_integration_test` automatically loads an `app.aot` cache shipped
+beside the packaged runner. It preserves `QUARKUS_TEST_ARG_LINE` and appends
+`-XX:AOTMode=on -XX:AOTCache=app.aot`, so an incompatible cache fails the test
+instead of silently falling back. The package is presented in the test's
+writable project directory because the cache records relative JAR paths.
+The Quarkifier saves training-time JAR timestamps beside the cache, and the
+test launcher restores them on private copies: HotSpot validates these times,
+while Bazel's remote artifact transport preserves file content rather than
+modification times. Training and execution must use the same JDK build and
+module options. Quarkus's `quarkus.package.jar.aot.additional-recording-args`
+property supplies additional training JVM arguments when required by the runtime.
+Ordinary `quarkus_test` targets continue to use Quarkus's in-process test bootstrap.
 
 ## quarkus_app Attributes
 

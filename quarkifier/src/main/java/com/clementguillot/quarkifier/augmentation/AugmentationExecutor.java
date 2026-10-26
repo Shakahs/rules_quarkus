@@ -110,6 +110,9 @@ public final class AugmentationExecutor {
 
   private static void publishJvmPackage(
       Path stagingTarget, Path outputDir, JarPackageType packageType) throws java.io.IOException {
+    if (packageType == JarPackageType.AOT_JAR) {
+      AotCachePackage.recordJarTimestamps(stagingTarget.resolve("quarkus-app"));
+    }
     switch (packageType) {
       case FAST_JAR, MUTABLE_JAR, AOT_JAR -> copyTree(
           stagingTarget.resolve("quarkus-app"), outputDir.resolve("quarkus-app"));

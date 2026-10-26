@@ -195,6 +195,23 @@ fi
 TEST_PROJECT_DIR="$MODEL_DIR/project"
 mkdir -p "$TEST_PROJECT_DIR/src/main" "$TEST_PROJECT_DIR/target"
 
+# Quarkus trains build-phase AOT caches from the package directory and records relative JAR
+# paths. Its integration launcher inherits this JVM's working directory. Present the same
+# package layout in the existing writable test project, without modifying the runfiles.
+# Require a discovered cache to load: incompatible caches must fail rather than fall back.
+if [ "$TEST_KIND" = "integration" ] && [ "$ARTIFACT_TYPE" = "jar" ] &&
+    [ -f "$(dirname "$ARTIFACT_PATH")/app.aot" ]; then
+  AOT_PACKAGE_DIR="$(dirname "$ARTIFACT_PATH")"
+  if [ ! -f "$AOT_PACKAGE_DIR/app.aot.jar-timestamps" ]; then
+    echo "ERROR: AOT cache is missing its training-time JAR timestamps: $AOT_PACKAGE_DIR" >&2
+    exit 1
+  fi
+  "$JAVA" -cp "$TOOL_JAR" com.clementguillot.quarkifier.augmentation.AotCachePackage \
+    "$AOT_PACKAGE_DIR" "$TEST_PROJECT_DIR" || exit 1
+  ARTIFACT_PATH="$TEST_PROJECT_DIR/$(basename "$ARTIFACT_PATH")"
+  export QUARKUS_TEST_ARG_LINE="${QUARKUS_TEST_ARG_LINE:-} -XX:AOTMode=on -XX:AOTCache=app.aot"
+fi
+
 # Phase 2: Run JUnit with the serialized model. AppMakerHelper obtains the
 # application roots from that model and locates the selected test class from
 # the JUnit classpath. Adding the local jars again through OUTPUT_SOURCES_DIR

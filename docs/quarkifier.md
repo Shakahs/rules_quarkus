@@ -136,6 +136,7 @@ com.clementguillot.quarkifier
 │
 ├── augmentation/                   Augmentation execution and post-processing
 │   ├── AugmentationExecutor        Orchestrates bootstrap + augmentation
+│   ├── AotCachePackage             Preserves training JAR times and stages integration-test packages
 │   ├── FastJarAssembler            Post-processes output into runnable Fast_Jar
 │   └── ApplicationDatWriter        Version-safe reflection wrapper for SerializedApplication.write()
 │
