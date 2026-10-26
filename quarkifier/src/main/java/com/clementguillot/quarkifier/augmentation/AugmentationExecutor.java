@@ -56,7 +56,7 @@ public final class AugmentationExecutor {
       if (config.mode() == AugmentationMode.DEV) {
         // DEV: DevModeLauncher builds the model over its session's class directories and starts
         // IsolatedDevModeMain with full Dev UI and hot-reload support.
-        DevModeLauncher.launch(config, explicitModel);
+        DevModeLauncher.launch(config, explicitModel, readContinuousTestModel(config));
         return;
       }
       ApplicationModel appModel =
@@ -161,6 +161,17 @@ public final class AugmentationExecutor {
     validateModelCompatibility(config.mode(), explicitModel);
     config.packageType().validateCompatibility(config.mode());
     return explicitModel;
+  }
+
+  /** The TEST model of the tests dev mode runs continuously, or {@code null} for none. */
+  private static BazelApplicationModel readContinuousTestModel(QuarkifierConfig config)
+      throws Exception {
+    if (config.continuousTestModel() == null) {
+      return null;
+    }
+    var testModel = BazelApplicationModelReader.read(config.continuousTestModel());
+    validateModelCompatibility(AugmentationMode.TEST, testModel);
+    return testModel;
   }
 
   static void validateModelCompatibility(AugmentationMode mode, BazelApplicationModel explicitModel)

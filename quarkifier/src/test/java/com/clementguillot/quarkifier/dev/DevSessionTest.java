@@ -100,6 +100,32 @@ class DevSessionTest {
   }
 
   @Test
+  void publish_keepsTheFilesARebuildWroteAgainUnchanged() throws Exception {
+    Path bazel = bazelDirectory("app", "v0");
+    Files.createDirectories(bazel.resolve("META-INF"));
+    Files.writeString(bazel.resolve("META-INF/beans.xml"), "");
+    DevSession session = start(bazel);
+    Path root = session.root();
+    FileTime linked = Files.getLastModifiedTime(root.resolve("gen-0/000-app/META-INF/beans.xml"));
+
+    // Bazel writes the rebuilt target's whole directory again: beans.xml is a new file with the
+    // same content and a later time, App.class a new file with new content.
+    rebuild(bazel, "v1");
+    Files.createDirectories(bazel.resolve("META-INF"));
+    Files.writeString(bazel.resolve("META-INF/beans.xml"), "");
+    Files.setLastModifiedTime(
+        bazel.resolve("META-INF/beans.xml"), FileTime.fromMillis(linked.toMillis() + 60_000));
+    session.publish();
+
+    Path beans = root.resolve("gen-1/000-app/META-INF/beans.xml");
+    assertTrue(Files.isSameFile(root.resolve("gen-0/000-app/META-INF/beans.xml"), beans));
+    assertEquals(linked, Files.getLastModifiedTime(beans), "Quarkus must not see it changed");
+    Path app = root.resolve("gen-1/000-app/my/App.class");
+    assertTrue(Files.isSameFile(bazel.resolve("my/App.class"), app));
+    assertEquals("v1", read(app));
+  }
+
+  @Test
   void aLinkedFileKeepsBazelsModificationTime() throws Exception {
     Path bazel = bazelDirectory("app", "v0");
     FileTime built = FileTime.fromMillis(1_700_000_000_000L);
@@ -266,5 +292,106 @@ class DevSessionTest {
                 node("app", "jar", false, "app", List.of(first.toString(), second.toString()))));
 
     assertThrows(IllegalStateException.class, () -> DevSession.modules(model, Map.of()));
+  }
+
+  // ---- continuous tests ----
+
+  /** A TEST model whose application's test sources are built into {@code testOutputs}. */
+  private static BazelApplicationModel testModel(
+      List<BazelApplicationModel.Node> nodes, List<String> testOutputs) {
+    var tests =
+        new BazelApplicationModel.SourceSet(
+            "tests", List.of(), List.of(), testOutputs, List.of(), List.of());
+    var application =
+        new BazelApplicationModel.WorkspaceModule(
+            "app",
+            "//:app",
+            ".",
+            ".",
+            "BUILD.bazel",
+            List.of(tests),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            null);
+    return new BazelApplicationModel(
+        BazelApplicationModel.SCHEMA_VERSION,
+        new BazelApplicationModel.Producer("test", "1"),
+        com.clementguillot.quarkifier.QuarkifierVersionProvider.targetedQuarkusVersion(),
+        BazelApplicationModel.Mode.TEST,
+        nodes.get(0).id(),
+        nodes,
+        List.of(application),
+        new BazelApplicationModel.Platform(List.of(), Map.of(), List.of()));
+  }
+
+  @Test
+  void testModules_areTheTestClassesAndTheWorkspaceJarsOnlyTheTestsReach() throws Exception {
+    Path app = bazelDirectory("app", "a");
+    Path lib = bazelDirectory("lib", "b");
+    Path fixture = bazelDirectory("fixture", "c");
+    Path firstTests = bazelDirectory("first-tests", "d");
+    Path secondTests = bazelDirectory("second-tests", "e");
+    var devModules =
+        List.of(
+            new DevSession.Module(app.toString(), "000-app", app.toRealPath()),
+            new DevSession.Module(lib.toString(), "001-lib", lib.toRealPath()));
+
+    var testModules =
+        DevSession.testModules(
+            testModel(
+                List.of(
+                    node("app", "jar", false, "app", List.of(app.toString())),
+                    node("lib", "jar", true, "lib", List.of(lib.toString())),
+                    node("fixture", "jar", true, "fixture", List.of(fixture.toString()))),
+                List.of(firstTests.toString(), secondTests.toString())),
+            devModules,
+            Map.of());
+
+    assertEquals(
+        List.of(
+            new DevSession.Module(firstTests.toString(), "test-classes", firstTests.toRealPath()),
+            new DevSession.Module(secondTests.toString(), "test-classes", secondTests.toRealPath()),
+            new DevSession.Module(fixture.toString(), "002-fixture", fixture.toRealPath())),
+        testModules);
+  }
+
+  @Test
+  void start_mergesTheTestClassDirectoriesIntoOne() throws Exception {
+    Path first = bazelDirectory("first-tests", "same");
+    Path second = bazelDirectory("second-tests", "same");
+    Files.writeString(second.resolve("my/SecondTest.class"), "second");
+
+    DevSession session =
+        DevSession.start(
+            tempDir.resolve("session"),
+            List.of(
+                new DevSession.Module("bazel-out/first", "test-classes", first),
+                new DevSession.Module("bazel-out/second", "test-classes", second)));
+
+    assertEquals(session.root().resolve("current/test-classes"), session.testClasses());
+    assertEquals("same", read(session.testClasses().resolve("my/App.class")));
+    assertEquals("second", read(session.testClasses().resolve("my/SecondTest.class")));
+    assertEquals(session.testClasses(), session.classPaths().get("bazel-out/second"));
+    assertTrue(Files.isDirectory(session.testTrigger()));
+  }
+
+  @Test
+  void start_failsForTwoTestClassDirectoriesHoldingOneFileApart() throws Exception {
+    Path first = bazelDirectory("first-tests", "one");
+    Path second = bazelDirectory("second-tests", "other");
+
+    var exception =
+        assertThrows(
+            java.io.IOException.class,
+            () ->
+                DevSession.start(
+                    tempDir.resolve("session"),
+                    List.of(
+                        new DevSession.Module("bazel-out/first", "test-classes", first),
+                        new DevSession.Module("bazel-out/second", "test-classes", second))));
+
+    assertTrue(exception.getMessage().contains("my/App.class"), exception.getMessage());
   }
 }

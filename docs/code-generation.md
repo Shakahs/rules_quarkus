@@ -68,9 +68,9 @@ Gradle's test code-generation task: providers run with `LaunchMode.TEST` and
 the test flag enabled, and their generated Java is compiled on the test
 classpath. Unlike Maven or Gradle, main and test generation are normally
 declared as separate Bazel library targets. Test generator inputs are rebuilt
-by `bazel test`, but they are not currently watched by an already-running
-`<app>_dev` session for Quarkus continuous testing; dev-mode regeneration
-watches main-mode generator inputs only.
+by `bazel test`, but an `<app>_dev` session does not watch them, even for the
+tests it runs continuously; dev-mode regeneration watches main-mode generator
+inputs only.
 
 ## Dependency-only generation
 

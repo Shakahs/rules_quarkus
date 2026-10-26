@@ -555,7 +555,7 @@ def quarkus_java_library(name, srcs = [], resources = [], deps = [], codegen_src
         **java_kwargs
     )
 
-def quarkus_app(name, dev = True, dev_build_args = [], dev_deps = None, dev_project_files = {{}}, dev_watch_dirs = [], native = False, native_container_build = False,
+def quarkus_app(name, dev = True, dev_build_args = [], dev_deps = None, dev_project_files = {{}}, dev_watch_dirs = [], continuous_tests = [], native = False, native_container_build = False,
                 native_container_runtime = "auto", native_builder_image = _DEFAULT_BUILDER_IMAGE,
                 package_type = "fast-jar", build_properties = {{}}, **kwargs):
     \"\"\"Builds a Quarkus application with optional dev-mode and native targets.
@@ -587,6 +587,11 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_deps = None, dev_proj
             the source roots derived from `deps` (e.g. ["web/js/src/main/scala"]). Sources that
             reach the application as a built asset rather than as a classpath entry have no
             dependency edge to derive a source root from, so name them here.
+        continuous_tests: quarkus_test targets of the application that the dev target runs as
+            Quarkus's continuous testing does, inside its own JVM, from the build it runs (press
+            `r` in the dev console, or set `quarkus.test.continuous-testing=enabled`). Their
+            environment, data, JVM flags and test-augmentation properties become the dev
+            process's, so they must agree. The dev target is then `testonly`.
         native: If True, creates a <name>_native target using rules_graalvm (host compilation).
         native_container_build: If True, creates a <name>_native target using Docker/Podman (container compilation).
         native_container_runtime: Container runtime: 'auto' (default), 'docker', or 'podman'.
@@ -595,6 +600,8 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_deps = None, dev_proj
         build_properties: Declared build-time properties shared by the JVM, dev, and native targets.
         **kwargs: Passed to the underlying quarkus_app_rule (deps, version, jvm_flags, etc.).
     \"\"\"
+    if continuous_tests and not dev:
+        fail("continuous_tests run in the dev target, which dev = False leaves out")
     if native and native_container_build:
         fail("Cannot set both 'native' and 'native_container_build'. " +
              "Use 'native' for host-based compilation (rules_graalvm) or " +
@@ -639,8 +646,12 @@ def quarkus_app(name, dev = True, dev_build_args = [], dev_deps = None, dev_proj
         dev_common = dict(common)
         if dev_deps != None:
             dev_common["deps"] = dev_deps
+        if continuous_tests:
+            # The tests are testonly, and so is what depends on them.
+            dev_common["testonly"] = True
         quarkus_dev_rule(
             name = name + "_dev",
+            continuous_tests = continuous_tests,
             core_deployment_deps = _CORE_DEPLOYMENT_DEPS,
             dev_build_args = dev_build_args,
             dev_project_files = dev_project_files,
@@ -1070,15 +1081,26 @@ def _catalog_indexes(catalog):
 def _root_keys(coordinates, indexes, label):
     keys = []
     seen = {}
+    absent = []
     for coordinate in coordinates:
         normalized = _normalize_coordinate(coordinate)
         node = indexes.by_coordinate.get(normalized)
         if node == None:
-            fail("{} '{}' is absent from the Maven lock; add it to maven.install artifacts and repin".format(label, normalized))
+            if normalized not in absent:
+                absent.append(normalized)
+            continue
         key = node["coordinateKey"]
         if key not in seen:
             seen[key] = True
             keys.append(key)
+    if absent:
+        # Every one at once: each repin can then add them all.
+        fail("{} {} absent from the Maven lock; add {} to maven.install artifacts and repin:\n  {}".format(
+            label + "s" if len(absent) > 1 else label,
+            "are" if len(absent) > 1 else "is",
+            "them" if len(absent) > 1 else "it",
+            "\n  ".join(absent),
+        ))
     return keys
 
 def _closure(root_keys, nodes_by_key):

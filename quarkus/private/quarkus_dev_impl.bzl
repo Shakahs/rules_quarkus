@@ -10,15 +10,18 @@ built for it, named in the application model, so the rebuild itself is what
 Quarkus finds changed: nothing is copied out of Bazel's output tree.
 """
 
+load("@bazel_lib//lib:lists.bzl", "unique")
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
-load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "collect_all_model_artifacts", "model_root_ids", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "write_build_properties")
-load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_resource_dir_paths", "collect_runtime_classpath", "collect_source_dir_paths", "collect_watch_dir_paths", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
+load("//quarkus/private:continuous_tests.bzl", "merge_continuous_tests")
+load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_local_app_jars", "collect_resource_dir_paths", "collect_runtime_classpath", "collect_source_dir_paths", "collect_test_watch_dir_paths", "collect_watch_dir_paths", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
-load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
+load("//quarkus/private:model_assembly.bzl", "assemble_application_model", "assemble_model_from_parts")
 load("//quarkus/private:quarkus_codegen_impl.bzl", "collect_codegen_input_dirs", "quarkus_codegen_metadata_aspect")
+load("//quarkus/private:quarkus_test_impl.bzl", "QuarkusContinuousTestInfo")
 
 def _hot_reload_bazel_target(ctx):
     """Returns the label the file watcher rebuilds on a source change.
@@ -61,6 +64,41 @@ def _collect_project_files(ctx):
             outputs.append(output)
     return struct(lines = lines, files = depset(outputs))
 
+def _continuous_tests(ctx, conditional_classpath):
+    """The TEST model of the tests the dev target runs continuously, and what the dev JVM takes on.
+
+    Args:
+        ctx: Rule context for the dev target.
+        conditional_classpath: Depset of conditional dependency candidates.
+    Returns:
+        A struct of the `model`, the `jvm_flags_file`, the shell `environment_exports`, the tests'
+        `runtime_classpath`, and the `files` and `runfiles` the tests run from; or None when the
+        dev target runs no tests.
+    """
+    if not ctx.attr.continuous_tests:
+        return None
+    tests = merge_continuous_tests(ctx, ctx.attr.continuous_tests, ctx.attr.build_properties)
+    model = assemble_model_from_parts(
+        ctx,
+        ctx.label.name + "_continuous_tests",
+        tests.model_parts,
+        conditional_classpath,
+        "test",
+        # The dev model's application, which quarkus_app takes from its first dep.
+        test_application = model_root_ids(ctx.attr.deps)[0],
+    )
+    jvm_flags_file = ctx.actions.declare_file(ctx.label.name + "_continuous_test_jvm_flags.txt")
+    ctx.actions.write(output = jvm_flags_file, content = "".join([flag + "\n" for flag in tests.jvm_flags]))
+    parts = tests.model_parts
+    return struct(
+        model = model,
+        jvm_flags_file = jvm_flags_file,
+        environment_exports = tests.environment_exports,
+        runtime_classpath = parts.runtime_classpath,
+        files = depset([model, jvm_flags_file], transitive = [parts.model_artifacts, parts.runtime_classpath, parts.deployment_classpath]),
+        runfiles = tests.runfiles,
+    )
+
 def _write_project_files_file(ctx, lines):
     out = ctx.actions.declare_file(ctx.label.name + "_project_files.txt")
     ctx.actions.write(output = out, content = "".join([line + "\n" for line in lines]))
@@ -84,6 +122,13 @@ def _quarkus_dev_impl(ctx):
         "dev",
         ctx.label.name.removesuffix("_dev"),
     )
+    continuous_tests = _continuous_tests(ctx, conditional_classpath)
+
+    # The tests' sources are watched as the application's are: a change rebuilds the dev target,
+    # whose runfiles hold the tests' classes.
+    watch_dirs = collect_watch_dir_paths(ctx.attr.deps, runtime_classpath, ctx.attr.dev_watch_dirs)
+    if continuous_tests:
+        watch_dirs = unique(watch_dirs + collect_test_watch_dir_paths(continuous_tests.runtime_classpath))
     codegen_input_dirs = collect_codegen_input_dirs(ctx.attr.deps).to_list()
     bazel_targets = _hot_reload_bazel_target(ctx)
     project_files = _collect_project_files(ctx)
@@ -96,7 +141,7 @@ def _quarkus_dev_impl(ctx):
         local_app_jars = write_runfiles_paths_file(ctx, "_local_app_jars.txt", depset(collect_local_app_jars(ctx.attr.deps, runtime_classpath)), ":"),
         core_deploy_cp = write_runfiles_paths_file(ctx, "_core_deploy_cp.txt", core_deployment_classpath, ":"),
         source_dirs = _write_csv_file(ctx, "_source_dirs.txt", collect_source_dir_paths(ctx.attr.deps, runtime_classpath)),
-        watch_dirs = _write_csv_file(ctx, "_watch_dirs.txt", collect_watch_dir_paths(ctx.attr.deps, runtime_classpath, ctx.attr.dev_watch_dirs)),
+        watch_dirs = _write_csv_file(ctx, "_watch_dirs.txt", watch_dirs),
         resource_dirs = _write_csv_file(ctx, "_resource_dirs.txt", collect_resource_dir_paths(ctx.attr.deps, runtime_classpath)),
         bazel_targets = _write_csv_file(ctx, "_bazel_targets.txt", bazel_targets),
         codegen_input_dirs = _write_csv_file(ctx, "_codegen_input_dirs.txt", codegen_input_dirs),
@@ -105,7 +150,7 @@ def _quarkus_dev_impl(ctx):
 
     tool_jar = ctx.file.quarkifier_tool
     java_runtime = ctx.attr._java_runtime[java_common.JavaRuntimeInfo]
-    launcher = _write_dev_launcher(ctx, tool_jar, files, model, java_runtime)
+    launcher = _write_dev_launcher(ctx, tool_jar, files, model, java_runtime, continuous_tests)
 
     runfiles = ctx.runfiles(
         files = [
@@ -124,12 +169,17 @@ def _quarkus_dev_impl(ctx):
         ] + ctx.files.deployment_artifacts,
         # The project files ride in the runfiles so that building the dev target — which is
         # what the hot-reload watcher does — rebuilds them too.
-        transitive_files = depset(transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deployment_classpath, core_deployment_classpath, java_runtime.files, project_files.files]),
+        transitive_files = depset(transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deployment_classpath, core_deployment_classpath, java_runtime.files, project_files.files] + ([continuous_tests.files] if continuous_tests else [])),
     )
+    if continuous_tests:
+        runfiles = runfiles.merge(continuous_tests.runfiles)
 
     return [
         DefaultInfo(executable = launcher, runfiles = runfiles),
-        OutputGroupInfo(quarkus_model = depset([model])),
+        OutputGroupInfo(
+            quarkus_model = depset([model]),
+            quarkus_continuous_test_model = depset([continuous_tests.model] if continuous_tests else []),
+        ),
     ]
 
 def _join_dev_build_args(args):
@@ -139,7 +189,7 @@ def _join_dev_build_args(args):
             fail("dev_build_args: commas are not supported (used as delimiter); got '{}'".format(arg))
     return ",".join(args)
 
-def _write_dev_launcher(ctx, tool_jar, files, model_file, java_runtime):
+def _write_dev_launcher(ctx, tool_jar, files, model_file, java_runtime, continuous_tests):
     """Expands the dev launcher template with the metadata file locations."""
     launcher = ctx.actions.declare_file(ctx.label.name + "_dev.sh")
     ctx.actions.expand_template(
@@ -152,6 +202,9 @@ def _write_dev_launcher(ctx, tool_jar, files, model_file, java_runtime):
             "%{build_properties_file}": files.build_properties.short_path,
             "%{dev_build_args}": _join_dev_build_args(ctx.attr.dev_build_args),
             "%{codegen_input_dirs_file}": files.codegen_input_dirs.short_path,
+            "%{continuous_test_environment}": "\n".join(continuous_tests.environment_exports) if continuous_tests else "",
+            "%{continuous_test_jvm_flags_file}": continuous_tests.jvm_flags_file.short_path if continuous_tests else "",
+            "%{continuous_test_model}": continuous_tests.model.short_path if continuous_tests else "",
             "%{core_deploy_cp_file}": files.core_deploy_cp.short_path,
             "%{java_home}": java_runtime.java_home_runfiles_path,
             "%{local_app_jars_file}": files.local_app_jars.short_path,
@@ -214,6 +267,16 @@ quarkus_dev_rule = rule(
             ],
             providers = [JavaInfo],
             doc = "java_library and Maven artifact targets.",
+        ),
+        "continuous_tests": attr.label_list(
+            cfg = disable_coverage_transition,
+            providers = [QuarkusContinuousTestInfo],
+            doc = """\
+quarkus_test targets of the application that dev mode runs continuously, in its own JVM, as
+Quarkus's continuous testing does: their tests are assembled into one TEST model whose
+application is this target's, and a hot-reload rebuild of this target rebuilds them too. Their
+environment, data, JVM flags and test-augmentation properties become the dev process's.
+""",
         ),
         "dev_watch_dirs": attr.string_list(
             doc = """\

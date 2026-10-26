@@ -67,6 +67,7 @@ quarkus_extension_deployment_classpath_aspect = aspect(
 # rebuilds the dev target exactly as a `.java` edit does.
 _SOURCE_MARKERS = ["src/main/java", "src/test/java"]
 _WATCH_MARKERS = ["src/main/java", "src/main/scala"]
+_TEST_WATCH_MARKERS = ["src/test/java", "src/test/scala", "src/test/resources"]
 _RESOURCE_MARKERS = ["src/main/resources"]
 
 def short_path(f):
@@ -245,6 +246,17 @@ def collect_watch_dir_paths(deps, runtime_classpath = None, extra_dirs = []):
             seen[directory] = True
             dirs.append(directory)
     return dirs
+
+def collect_test_watch_dir_paths(runtime_classpath):
+    """Derives the test source roots the hot-reload watcher observes for continuous tests.
+
+    Args:
+        runtime_classpath: Depset of the tests' transitive runtime jars; each local jar's owner
+            package contributes its Maven-layout test roots.
+    Returns:
+        A deduplicated list of workspace-relative directory path strings.
+    """
+    return _collect_marker_dir_paths([], runtime_classpath, _TEST_WATCH_MARKERS)
 
 def collect_resource_dir_paths(deps, runtime_classpath = None):
     """Derives candidate resource roots (src/main/resources) from deps.

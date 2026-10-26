@@ -39,6 +39,10 @@ import java.util.Map;
  * @param applicationModel explicit validated Bazel model JSON
  * @param artifactPaths each artifact path the model holds to the file holding that artifact where
  *     this invocation runs; an artifact absent from the map is read at the model's path
+ * @param continuousTestModel the TEST model of the tests dev mode runs continuously, or {@code
+ *     null} for none (dev mode only)
+ * @param continuousTestJvmFlags the test JVM flags of those tests, which the dev JVM runs them
+ *     with
  */
 public record QuarkifierConfig(
     List<Path> applicationClasspath,
@@ -63,4 +67,6 @@ public record QuarkifierConfig(
     List<Path> localAppJars,
     Map<String, String> buildProperties,
     Path applicationModel,
-    Map<String, Path> artifactPaths) {}
+    Map<String, Path> artifactPaths,
+    Path continuousTestModel,
+    List<String> continuousTestJvmFlags) {}

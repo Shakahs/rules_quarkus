@@ -93,6 +93,18 @@ class GenerationSwitchTest {
     GenerationSwitch.switchToReady(session.root());
 
     assertEquals(before, Files.readAttributes(current, "unix:ino", LinkOption.NOFOLLOW_LINKS));
+    assertFalse(Files.exists(session.testTrigger().resolve(GenerationSwitch.TRIGGER_FILE)));
+  }
+
+  @Test
+  void switchToReady_namesTheNewGenerationToTheContinuousTests() throws Exception {
+    DevSession session = session("v0");
+    session.publish();
+
+    GenerationSwitch.switchToReady(session.root());
+
+    assertEquals(
+        "gen-1", Files.readString(session.testTrigger().resolve(GenerationSwitch.TRIGGER_FILE)));
   }
 
   @Test

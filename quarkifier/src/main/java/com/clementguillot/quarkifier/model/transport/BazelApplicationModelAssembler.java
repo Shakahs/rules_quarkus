@@ -60,7 +60,14 @@ public final class BazelApplicationModelAssembler {
 
   private BazelApplicationModelAssembler() {}
 
-  /** Complete, already-parsed action inputs. Deployment paths are keyed by catalog repoPath. */
+  /**
+   * Complete, already-parsed action inputs. Deployment paths are keyed by catalog repoPath.
+   *
+   * <p>{@code testApplicationId} names the application under test of a TEST model that holds the
+   * tests of several test targets at once, as dev mode's continuous testing runs them: every root
+   * that tests an application must test this one, and all of them become its test sources. When
+   * it is {@code null} the roots identify the one test target and its application themselves.
+   */
   public record Inputs(
       Roots roots,
       List<TargetFragment> targetFragments,
@@ -80,7 +87,8 @@ public final class BazelApplicationModelAssembler {
       Mode mode,
       String applicationName,
       String applicationVersion,
-      String producerVersion) {
+      String producerVersion,
+      String testApplicationId) {
 
     public Inputs {
       targetFragments = List.copyOf(targetFragments);
@@ -104,6 +112,9 @@ public final class BazelApplicationModelAssembler {
     require(inputs.mode() != null, "mode is required");
     requireNonBlank(inputs.quarkusVersion(), "Quarkus version");
     requireNonBlank(inputs.producerVersion(), "producer version");
+    require(
+        inputs.testApplicationId() == null || inputs.mode() == Mode.TEST,
+        "an application under test is named only for a TEST model");
     require(
         !inputs.roots().rootIds().isEmpty(),
         "application root list is empty for " + inputs.roots().applicationLabel());
@@ -135,7 +146,7 @@ public final class BazelApplicationModelAssembler {
     private final Map<String, String> extensionDeployments = new LinkedHashMap<>();
     private final Map<String, String> conditionalInjectionParents = new LinkedHashMap<>();
     private final Set<String> runtimeNodeIds = new LinkedHashSet<>();
-    private TargetFragment testSourceFragment;
+    private final List<TargetFragment> testSourceFragments = new ArrayList<>();
 
     private Assembly(Inputs inputs) {
       this.inputs = inputs;
@@ -515,13 +526,18 @@ public final class BazelApplicationModelAssembler {
     }
 
     private String promoteApplication() {
-      String testRootId = null;
+      Set<String> testRootIds = Set.of();
       String applicationId;
       if (inputs.mode() == Mode.TEST) {
-        TestSelection selection = selectTestApplication();
-        testRootId = selection.testRootId();
-        applicationId = selection.applicationId();
-        collapseTestRoot(testRootId, applicationId);
+        if (inputs.testApplicationId() == null) {
+          TestSelection selection = selectTestApplication();
+          testRootIds = Set.of(selection.testRootId());
+          applicationId = selection.applicationId();
+        } else {
+          applicationId = inputs.testApplicationId();
+          testRootIds = testRootsOf(applicationId);
+        }
+        collapseTestRoots(testRootIds, applicationId);
         skipApplicationAmongDependencies(applicationId);
       } else {
         applicationId = inputs.roots().rootIds().get(0);
@@ -549,7 +565,7 @@ public final class BazelApplicationModelAssembler {
       application.compileOnly = false;
 
       for (String rootId : inputs.roots().rootIds()) {
-        if (rootId.equals(applicationId) || rootId.equals(testRootId)) {
+        if (rootId.equals(applicationId) || testRootIds.contains(rootId)) {
           continue;
         }
         DependencyEdge dependency =
@@ -566,6 +582,47 @@ public final class BazelApplicationModelAssembler {
     }
 
     private TestSelection selectTestApplication() {
+      List<TestSelection> selected = pruneDependedUponCandidates(testCandidates());
+      if (selected.size() != 1) {
+        fail(
+            "quarkus_test roots must identify exactly one local test target with exactly one"
+                + " independent local application library with main sources; found "
+                + selected);
+      }
+      return selected.get(0);
+    }
+
+    /**
+     * The roots that test {@code applicationId}, when the roots are the tests of several test
+     * targets at once. A root that tests an application must test this one; a root that tests none
+     * is an ordinary test dependency.
+     */
+    private Set<String> testRootsOf(String applicationId) {
+      MutableNode application = nodes.get(applicationId);
+      if (application == null || application.kind != NodeKind.WORKSPACE) {
+        fail("the application under test must be a local Java target the tests reach: " + applicationId);
+      }
+      Set<String> testRoots = new LinkedHashSet<>();
+      for (TestSelection selection : pruneDependedUponCandidates(testCandidates())) {
+        if (!applicationId.equals(selection.applicationId())) {
+          fail(
+              "test target "
+                  + selection.testRootId()
+                  + " tests "
+                  + selection.applicationId()
+                  + ", not the application under test "
+                  + applicationId);
+        }
+        testRoots.add(selection.testRootId());
+      }
+      if (testRoots.isEmpty()) {
+        fail("no test target among the roots tests the application " + applicationId);
+      }
+      return testRoots;
+    }
+
+    /** Every root's direct local libraries with main sources: the applications it may test. */
+    private List<TestSelection> testCandidates() {
       List<TestSelection> candidates = new ArrayList<>();
       for (String rootId : inputs.roots().rootIds()) {
         MutableNode testRoot = nodes.get(rootId);
@@ -588,16 +645,8 @@ public final class BazelApplicationModelAssembler {
             .map(applicationId -> new TestSelection(rootId, applicationId))
             .forEach(candidates::add);
       }
-      List<TestSelection> selected = pruneDependedUponCandidates(candidates);
-      if (selected.size() != 1) {
-        fail(
-            "quarkus_test roots must identify exactly one local test target with exactly one"
-                + " independent local application library with main sources; found "
-                + selected);
-      }
-      return selected.get(0);
+      return candidates;
     }
-
     /**
      * Drops candidates that another candidate of the same test root already depends on.
      *
@@ -651,34 +700,42 @@ public final class BazelApplicationModelAssembler {
           .anyMatch(path -> !(path.contains("/src/test/") || path.startsWith("src/test/")));
     }
 
-    private void collapseTestRoot(String testRootId, String applicationId) {
-      MutableNode testRoot = nodes.get(testRootId);
+    /**
+     * Folds the test roots into the application under test: their dependencies become its TEST
+     * dependencies and their sources its test sources. An edge from one test root to another stays
+     * inside the application's test sources.
+     */
+    private void collapseTestRoots(Set<String> testRootIds, String applicationId) {
       MutableNode application = nodes.get(applicationId);
-      for (DependencyEdge edge : testRoot.edges.values()) {
-        if (applicationId.equals(edge.targetId())) {
-          continue;
+      for (String testRootId : testRootIds) {
+        MutableNode testRoot = nodes.get(testRootId);
+        for (DependencyEdge edge : testRoot.edges.values()) {
+          if (applicationId.equals(edge.targetId()) || testRootIds.contains(edge.targetId())) {
+            continue;
+          }
+          if (inputs.modelPrivateTargetIds().contains(edge.targetId())) {
+            continue;
+          }
+          DependencyEdge testDependency =
+              new DependencyEdge(
+                  edge.targetId(),
+                  edge.relation(),
+                  DependencyScope.TEST,
+                  edge.optional(),
+                  edge.exclusions());
+          application.addEdge(testDependency);
+          if (testRoot.declaredEdges.containsKey(MutableNode.edgeKey(edge))) {
+            application.addDeclaredEdge(testDependency);
+          }
         }
-        if (inputs.modelPrivateTargetIds().contains(edge.targetId())) {
-          continue;
-        }
-        DependencyEdge testDependency =
-            new DependencyEdge(
-                edge.targetId(),
-                edge.relation(),
-                DependencyScope.TEST,
-                edge.optional(),
-                edge.exclusions());
-        application.addEdge(testDependency);
-        if (testRoot.declaredEdges.containsKey(MutableNode.edgeKey(edge))) {
-          application.addDeclaredEdge(testDependency);
-        }
+        testSourceFragments.add(fragments.get(testRootId));
       }
-      testSourceFragment = fragments.get(testRootId);
-      nodes.remove(testRootId);
-      nodesByCoordinates.remove(BazelArtifactCoordinates.canonical(testRoot.coordinates));
-      runtimeNodeIds.remove(testRootId);
+      for (String testRootId : testRootIds) {
+        MutableNode testRoot = nodes.remove(testRootId);
+        nodesByCoordinates.remove(BazelArtifactCoordinates.canonical(testRoot.coordinates));
+        runtimeNodeIds.remove(testRootId);
+      }
     }
-
     /**
      * Drops the edges that lead back to the application under test. Test fixtures that depend on
      * the library under test find the application among their own dependencies; Quarkus skips the
@@ -1468,20 +1525,26 @@ public final class BazelApplicationModelAssembler {
       sourceSets.add(main);
       if (node.kind == NodeKind.APPLICATION
           && inputs.mode() == Mode.TEST
-          && testSourceFragment != null) {
+          && !testSourceFragments.isEmpty()) {
+        List<FileReference> testSources =
+            testSourceFragments.stream().flatMap(test -> test.sources().stream()).toList();
+        List<FileReference> testResources =
+            testSourceFragments.stream().flatMap(test -> test.resources().stream()).toList();
         List<String> testOutputs =
-            testSourceFragment.outputDirectories().stream()
+            testSourceFragments.stream()
+                .flatMap(test -> test.outputDirectories().stream())
                 .map(FileReference::path)
+                .distinct()
                 .sorted()
                 .toList();
         sourceSets.add(
             new SourceSet(
                 "tests",
-                parentDirectories(testSourceFragment.sources(), true),
-                parentDirectories(testSourceFragment.resources(), true),
+                parentDirectories(testSources, true),
+                parentDirectories(testResources, true),
                 testOutputs,
-                parentDirectories(testSourceFragment.sources(), false),
-                parentDirectories(testSourceFragment.resources(), false)));
+                parentDirectories(testSources, false),
+                parentDirectories(testResources, false)));
       }
       return new WorkspaceModule(
           fragment.targetId(),

@@ -126,6 +126,13 @@ public final class AssembleModelCommand implements Callable<Integer> {
   @Option(names = "--producer-version", required = true)
   private String producerVersion;
 
+  @Option(
+      names = "--test-application",
+      description =
+          "Target id of the application under test, when the roots are the tests of several test"
+              + " targets at once (TEST mode only).")
+  private String testApplication;
+
   @Option(names = "--output", required = true)
   private Path output;
 
@@ -163,7 +170,8 @@ public final class AssembleModelCommand implements Callable<Integer> {
                 parsedMode,
                 applicationName,
                 applicationVersion,
-                producerVersion));
+                producerVersion,
+                testApplication));
     BazelApplicationModelWriter.write(model, output);
     return 0;
   }

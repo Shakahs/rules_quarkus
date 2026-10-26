@@ -47,6 +47,16 @@ public final class GenerationSwitch implements HotReplacementSetup {
   /** The link to the newest complete generation. */
   public static final String READY = "ready";
 
+  /**
+   * The directory this class writes {@value #TRIGGER_FILE} into whenever it moves {@value
+   * #CURRENT}. It is the source directory of the continuous tests: Quarkus watches it and, on a
+   * change, looks for changed classes and runs the tests they affect.
+   */
+  public static final String TEST_TRIGGER = "test-trigger";
+
+  /** The file in {@value #TEST_TRIGGER} naming the generation the application now runs. */
+  public static final String TRIGGER_FILE = "generation";
+
   private static final Logger LOGGER = Logger.getLogger(GenerationSwitch.class);
 
   private WatchService publications;
@@ -106,6 +116,32 @@ public final class GenerationSwitch implements HotReplacementSetup {
       LOGGER.infof("Switched to the Bazel build in %s", root.resolve(ready));
     } catch (IOException e) {
       LOGGER.errorf(e, "Cannot switch %s to its newest build", root);
+      return;
+    }
+    triggerTests(root);
+  }
+
+  /**
+   * Tells the continuous tests that the classes changed.
+   *
+   * <p>Quarkus looks for changed test and application classes when a test source changes, and
+   * otherwise only once a second on a platform without a file watch service. A dev module declares
+   * no sources, so this class gives the tests one file to watch. Quarkus's test scan waits for the
+   * scan lock this step runs under, so it reads the generation just switched to.
+   *
+   * @param root the dev session directory
+   */
+  private static void triggerTests(Path root) {
+    Path trigger = root.resolve(TEST_TRIGGER);
+    if (!Files.isDirectory(trigger)) {
+      return;
+    }
+    try {
+      Files.writeString(
+          trigger.resolve(TRIGGER_FILE),
+          Files.readSymbolicLink(root.resolve(CURRENT)).toString());
+    } catch (IOException e) {
+      LOGGER.errorf(e, "Cannot tell the continuous tests about the build in %s", root);
     }
   }
 

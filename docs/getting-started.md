@@ -349,6 +349,28 @@ quarkus_app(
 
 See [Dev Mode & Dev UI Integration](dev-mode.md) for details on how this works under the hood.
 
+### Continuous testing
+
+List the application's `quarkus_test` targets in `continuous_tests`, and the dev target runs them
+as Quarkus continuous testing does, inside the dev JVM:
+
+```starlark
+quarkus_app(
+    name = "helloworld",
+    continuous_tests = [":test"],
+    deps = [":lib"],
+)
+```
+
+Press `r` in the dev console, or set `quarkus.test.continuous-testing=enabled`, to start them.
+A change to the application or to a test rebuilds the dev target, and Quarkus then runs the
+tests the change affects against that build.
+
+Every listed test must test the dev target's application, its first dep. The tests run in the
+dev JVM, so their `env`, `data`, `jvm_flags` and `build_properties` become the dev process's;
+two tests that set one of them differently fail the build. Because `quarkus_test` targets are
+`testonly`, so is the `_dev` target that runs them.
+
 ### JVM package types
 
 `fast-jar` remains the default. Select another Quarkus JVM layout with
@@ -388,6 +410,10 @@ workflow.
 | `package_type` | `string` | `"fast-jar"` | JVM package layout; see the table above |
 | `dev` | `bool` | `True` | Also create the `<name>_dev` target |
 | `dev_build_args` | `string_list` | `[]` | Extra Bazel flags reused by hot-reload builds |
+| `dev_deps` | `label_list` | `deps` | The dev target's deps, where the dev loop needs other artifacts than the package |
+| `dev_project_files` | `label_keyed_string_dict` | `{}` | Built files mirrored into workspace directories the application reads in dev mode |
+| `dev_watch_dirs` | `string_list` | `[]` | Workspace directories the hot-reload watcher observes beyond the derived source roots |
+| `continuous_tests` | `label_list` | `[]` | `quarkus_test` targets the dev target runs as Quarkus continuous tests; see [Continuous testing](#continuous-testing) |
 | `native` | `bool` | `False` | Also create `<name>_native` using `rules_graalvm` |
 | `native_container_build` | `bool` | `False` | Also create `<name>_native` using Docker or Podman |
 

@@ -123,7 +123,10 @@ session's `current` generation, hard links of one complete build, and
 `GenerationSwitch` moves `current` only inside Quarkus's scan. Do not give
 Quarkus workspace source paths, and do not point a module at Bazel's class
 directories directly: Bazel deletes an action's outputs before rerunning it,
-so a scan could read a half-written build.
+so a scan could read a half-written build. Continuous tests are held to the
+same rule: their classes run from the generation's merged `test-classes`, and
+`GenerationSwitch` tells Quarkus to look for changes by writing the
+`test-trigger` file it watches, never by giving it test sources.
 
 ### Keep code generation hermetic
 

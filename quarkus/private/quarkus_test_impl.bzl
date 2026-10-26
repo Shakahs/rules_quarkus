@@ -15,13 +15,30 @@ load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@rules_java//java/common:java_common.bzl", "java_common")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusAppInfo", "QuarkusNativeInfo")
-load("//quarkus/private:application_model_aspect.bzl", "QuarkusBazelTargetGraphInfo", "collect_all_model_artifacts", "has_maven_artifact", "quarkus_application_model_aspect")
+load("//quarkus/private:application_model_aspect.bzl", "QuarkusBazelTargetGraphInfo", "has_maven_artifact", "quarkus_application_model_aspect")
 load("//quarkus/private:build_properties.bzl", "validate_build_property_keys")
 load("//quarkus/private:classpath_utils.bzl", "collect_deployment_classpath", "collect_extension_runtime_jars", "collect_local_app_jars", "collect_runtime_classpath", "quarkus_extension_deployment_classpath_aspect", "write_runfiles_paths_file")
 load("//quarkus/private:coverage_transition.bzl", "disable_coverage_transition", "single_transitioned_target")
-load("//quarkus/private:model_assembly.bzl", "assemble_application_model")
+load("//quarkus/private:model_assembly.bzl", "application_model_parts", "assemble_model_from_parts")
 
-def _regex_escape_class_name(class_name):
+QuarkusContinuousTestInfo = provider(
+    doc = """What a quarkus_test brings to its application's continuous testing in dev mode.
+
+Dev mode runs the tests inside the application's own JVM, so their model, environment, data and
+JVM flags become the dev target's.""",
+    fields = {
+        "build_properties": "Dict of the test's declared test-augmentation properties.",
+        "environment_exports": "Dict of each environment variable to the shell line exporting it, a runfiles path made absolute under ${WORKSPACE_DIR}.",
+        "jvm_flags": "List of the test JVM's flags.",
+        "label": "The test target.",
+        "model_parts": "The parts of the test's TEST model (model_assembly.application_model_parts).",
+        "runfiles": "Runfiles of the test's data.",
+        "test_classes": "Fully-qualified test classes the test selects.",
+        "test_packages": "Packages the test selects, with their subpackages.",
+    },
+)
+
+def regex_escape_class_name(class_name):
     return class_name.replace("\\", "\\\\").replace(".", "\\.").replace("$", "\\$")
 
 def _build_test_args(test_packages, test_classes, fail_if_no_tests, fail_fast, integration = False):
@@ -36,7 +53,7 @@ def _build_test_args(test_packages, test_classes, fail_if_no_tests, fail_fast, i
     for cls in test_classes:
         args.append("--select-class=" + cls)
     if integration:
-        include_patterns = [".*IT$"] + ["^" + _regex_escape_class_name(cls) + "$" for cls in test_classes]
+        include_patterns = [".*IT$"] + ["^" + regex_escape_class_name(cls) + "$" for cls in test_classes]
         args.append("--include-classname=(" + "|".join(include_patterns) + ")")
     else:
         args.append("--exclude-classname=.*IT$")
@@ -186,18 +203,24 @@ def _write_artifact_paths_file(ctx, files):
     return output
 
 def _test_environment(ctx):
-    """The declared environment, and the launcher's exports of its values that name runfiles.
+    """The declared environment, and shell lines exporting it with absolute runfiles paths.
 
     A `$(rootpath <label>)` or `$(location <label>)` of a `data` label in a value is that label's
     runfiles path. Bazel exports it relative to the runfiles tree, where a test starts, but the
     test JVM runs from a project directory of its own, so the launcher exports each such value
     again with every path made absolute. Other expressions are refused.
+
+    Returns:
+        The environment, the export lines of its values that name runfiles, and every variable's
+        export line by name.
     """
     environment = {}
     exports = []
+    exports_by_name = {}
     for name, value in ctx.attr.env.items():
         if "$(" not in value:
             environment[name] = value
+            exports_by_name[name] = "export {}={}".format(name, shell.quote(value))
             continue
         parts = value.split("$(")
         words = [shell.quote(parts[0])]
@@ -211,7 +234,8 @@ def _test_environment(ctx):
             words.append(shell.quote(part[end + 1:]))
         environment[name] = ctx.expand_location(value, ctx.attr.data)
         exports.append("export {}={}".format(name, "".join(words)))
-    return environment, exports
+        exports_by_name[name] = exports[-1]
+    return environment, exports, exports_by_name
 
 def _test_impl(ctx, integration):
     if not ctx.attr.deps:
@@ -221,7 +245,8 @@ def _test_impl(ctx, integration):
     runtime_classpath = collect_runtime_classpath(ctx.attr.deps + ctx.attr.model_private_deps)
     conditional_classpath = collect_runtime_classpath([single_transitioned_target(ctx.attr.conditional_deps)])
     deploy_classpath = collect_deployment_classpath(single_transitioned_target(ctx.attr.deployment_deps), ctx.attr.deps)
-    model = assemble_application_model(ctx, ctx.attr.deps, runtime_classpath, conditional_classpath, deploy_classpath, "test")
+    model_parts = application_model_parts(ctx.attr.deps, runtime_classpath, deploy_classpath, [dep.label for dep in ctx.attr.model_private_deps])
+    model = assemble_model_from_parts(ctx, ctx.label.name, model_parts, conditional_classpath, "test")
 
     # Runtime classpath (for both JUnit -cp and quarkifier --application-classpath)
     # and the user-built jars used for test discovery and test-time model path
@@ -237,7 +262,7 @@ def _test_impl(ctx, integration):
     direct_jars_file = write_runfiles_paths_file(ctx, "_direct_jars.txt", _canonical(collect_local_app_jars(ctx.attr.deps, runtime_classpath, ext_rt_jars), canonical), ",")
     model_artifacts = depset(
         direct = ctx.files.deployment_artifacts + canonical.files,
-        transitive = [collect_all_model_artifacts(ctx.attr.deps), runtime_classpath, conditional_classpath, deploy_classpath],
+        transitive = [model_parts.model_artifacts, runtime_classpath, conditional_classpath, deploy_classpath],
     )
     artifact_paths_file = _write_artifact_paths_file(ctx, model_artifacts)
 
@@ -259,7 +284,7 @@ def _test_impl(ctx, integration):
         coverage_files.append(jacoco_runner)
 
     integration_artifact = _integration_artifact(ctx) if integration else None
-    environment, runfiles_env = _test_environment(ctx)
+    environment, runfiles_env, environment_exports = _test_environment(ctx)
     launcher = ctx.actions.declare_file(ctx.label.name + "_test.sh")
     ctx.actions.expand_template(
         template = ctx.file._launcher_template,
@@ -300,12 +325,13 @@ def _test_impl(ctx, integration):
     )
     if coverage_runfiles:
         runfiles = runfiles.merge(coverage_runfiles)
-    runfiles = runfiles.merge_all([
+    data_runfiles = ctx.runfiles().merge_all([
         ctx.runfiles(transitive_files = data[DefaultInfo].files).merge(data[DefaultInfo].default_runfiles)
         for data in ctx.attr.data
     ])
+    runfiles = runfiles.merge(data_runfiles)
 
-    return [
+    providers = [
         DefaultInfo(executable = launcher, runfiles = runfiles),
         OutputGroupInfo(quarkus_model = depset([model])),
         RunEnvironmentInfo(
@@ -313,6 +339,18 @@ def _test_impl(ctx, integration):
             inherited_environment = [],
         ),
     ]
+    if not integration:
+        providers.append(QuarkusContinuousTestInfo(
+            build_properties = declared_build_properties,
+            environment_exports = environment_exports,
+            jvm_flags = ctx.attr.jvm_flags,
+            label = ctx.label,
+            model_parts = model_parts,
+            runfiles = data_runfiles,
+            test_classes = ctx.attr.test_classes,
+            test_packages = ctx.attr.test_packages,
+        ))
+    return providers
 
 def _quarkus_test_impl(ctx):
     return _test_impl(ctx, False)
@@ -440,6 +478,7 @@ def _test_attrs(integration = False):
 quarkus_test = rule(
     implementation = _quarkus_test_impl,
     test = True,
+    provides = [QuarkusContinuousTestInfo],
     attrs = _test_attrs(),
     doc = """\
 Internal rule — use quarkus_test() macro from @rules_quarkus//quarkus:defs.bzl instead.

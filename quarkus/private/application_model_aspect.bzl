@@ -1,5 +1,6 @@
 "Internal aspect that serializes Bazel Java target facts for model assembly."
 
+load("@bazel_lib//lib:lists.bzl", "unique")
 load("@rules_java//java/common:java_info.bzl", "JavaInfo")
 load("//quarkus:providers.bzl", "QuarkusExtensionInfo")
 
@@ -369,12 +370,11 @@ def has_maven_artifact(deps, group_id, artifact_id):
     coordinate_key = _coordinate_key(group_id, artifact_id)
     return coordinate_key in _collect_graph_depset(deps, "coordinate_keys").to_list()
 
-def _collect_unique_mappings(deps, field, key_field, value_field, label):
-    """Deduplicates mappings from a graph provider field across deps.
+def unique_mappings(mapping_lists, key_field, value_field, label):
+    """Deduplicates mappings, failing for a key mapped to two values.
 
     Args:
-        deps: Direct dependencies carrying application-model graph providers.
-        field: Attribute name on QuarkusBazelTargetGraphInfo to iterate.
+        mapping_lists: Lists of mapping dicts.
         key_field: Dict key used for deduplication.
         value_field: Dict key whose value is checked for conflicts.
         label: Human-readable label for error messages.
@@ -384,10 +384,8 @@ def _collect_unique_mappings(deps, field, key_field, value_field, label):
     """
     result = []
     seen = {}
-    for dep in deps:
-        if QuarkusBazelTargetGraphInfo not in dep:
-            continue
-        for item in getattr(dep[QuarkusBazelTargetGraphInfo], field):
+    for mappings in mapping_lists:
+        for item in mappings:
             key = item[key_field]
             value = item[value_field]
             if key in seen and seen[key] != value:
@@ -397,34 +395,49 @@ def _collect_unique_mappings(deps, field, key_field, value_field, label):
                 result.append(item)
     return result
 
+def _graph_mappings(deps, field):
+    return [
+        getattr(dep[QuarkusBazelTargetGraphInfo], field)
+        for dep in deps
+        if QuarkusBazelTargetGraphInfo in dep
+    ]
+
 def collect_local_deployments(deps):
     """Collects descriptor coordinate to local deployment root joins."""
-    return _collect_unique_mappings(deps, "local_deployments", "coordinate", "targetId", "local deployment coordinate")
+    return unique_mappings(_graph_mappings(deps, "local_deployments"), "coordinate", "targetId", "local deployment coordinate")
 
 def collect_local_runtime_aliases(deps):
     """Collects raw local runtime to packaged extension target aliases."""
-    return _collect_unique_mappings(deps, "local_runtime_aliases", "rawTargetId", "targetId", "local runtime target")
+    return unique_mappings(_graph_mappings(deps, "local_runtime_aliases"), "rawTargetId", "targetId", "local runtime target")
 
-def write_model_roots_file(ctx, deps):
-    """Writes direct dependency ids, preserving the public deps order.
+def model_root_ids(deps):
+    """The graph node ids of the direct dependencies, in the public deps order.
+
+    Args:
+        deps: Ordered direct dependencies carrying application-model graph providers.
+
+    Returns:
+        The root ids, each once.
+    """
+    return unique([
+        root_id
+        for dep in deps
+        if QuarkusBazelTargetGraphInfo in dep
+        for root_id in dep[QuarkusBazelTargetGraphInfo].root_ids.to_list()
+    ])
+
+def write_model_roots_file(ctx, name, root_ids):
+    """Writes the model's root ids.
 
     Args:
         ctx: Rule context used to declare and write the roots file.
-        deps: Ordered direct dependencies carrying application-model graph providers.
+        name: The model's name, which prefixes the file's.
+        root_ids: The root ids, in order.
 
     Returns:
         The declared application-model roots JSON file.
     """
-    output = ctx.actions.declare_file(ctx.label.name + ".quarkus-roots-v1.json")
-    root_ids = []
-    seen = {}
-    for dep in deps:
-        if QuarkusBazelTargetGraphInfo not in dep:
-            continue
-        for root_id in dep[QuarkusBazelTargetGraphInfo].root_ids.to_list():
-            if root_id not in seen:
-                seen[root_id] = True
-                root_ids.append(root_id)
+    output = ctx.actions.declare_file(name + ".quarkus-roots-v1.json")
     content = json.encode({
         "applicationLabel": str(ctx.label),
         "rootIds": root_ids,

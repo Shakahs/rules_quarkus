@@ -201,6 +201,20 @@ public final class AugmentationCommand implements Callable<Integer> {
       split = ",")
   private Map<Path, Path> projectFiles;
 
+  @Option(
+      names = "--continuous-test-model",
+      description =
+          "TEST-mode quarkus-bazel-model-v1 JSON of the tests dev mode runs continuously (dev mode"
+              + " only).")
+  private Path continuousTestModel;
+
+  @Option(
+      names = "--continuous-test-jvm-flags-file",
+      description =
+          "File of the continuous tests' JVM flags, one per line, which the dev JVM takes on"
+              + " (dev mode only).")
+  private Path continuousTestJvmFlagsFile;
+
   // ---- Execution ----
 
   @Override
@@ -255,6 +269,14 @@ public final class AugmentationCommand implements Callable<Integer> {
     if (bazelBuildTimeoutSeconds <= 0) {
       throw parameterException("--bazel-build-timeout-seconds must be positive");
     }
+    if (resolvedMode != AugmentationMode.DEV
+        && (continuousTestModel != null || continuousTestJvmFlagsFile != null)) {
+      throw parameterException(
+          "--continuous-test-model and --continuous-test-jvm-flags-file require --mode dev");
+    }
+    if (continuousTestModel == null && continuousTestJvmFlagsFile != null) {
+      throw parameterException("--continuous-test-jvm-flags-file requires --continuous-test-model");
+    }
 
     return new QuarkifierConfig(
         resolvedAppCp,
@@ -281,10 +303,24 @@ public final class AugmentationCommand implements Callable<Integer> {
         resolvedLocalJars,
         resolvedBuildProperties,
         applicationModel,
-        resolveArtifactPaths(artifactPathsFile));
+        resolveArtifactPaths(artifactPathsFile),
+        continuousTestModel,
+        resolveLines(continuousTestJvmFlagsFile));
   }
 
   // ---- internal helpers ----
+
+  /** The non-blank lines of {@code file}, or none when no file is given. */
+  private List<String> resolveLines(Path file) {
+    if (file == null) {
+      return List.of();
+    }
+    try {
+      return Files.readAllLines(file).stream().filter(line -> !line.isBlank()).toList();
+    } catch (IOException e) {
+      throw parameterException("Failed to read " + file, e);
+    }
+  }
 
   private Map<String, Path> resolveArtifactPaths(Path file) {
     if (file == null) {

@@ -267,7 +267,8 @@ class BazelApplicationModelAssemblerTest {
             base.mode(),
             base.applicationName(),
             base.applicationVersion(),
-            base.producerVersion());
+            base.producerVersion(),
+            null);
 
     BazelApplicationModel model = BazelApplicationModelAssembler.assemble(contextInputs);
 
@@ -356,7 +357,8 @@ class BazelApplicationModelAssemblerTest {
             Mode.NORMAL,
             "demo",
             "1.0.0",
-            "test");
+            "test",
+            null);
 
     BazelApplicationModel model = BazelApplicationModelAssembler.assemble(inputs);
 
@@ -435,7 +437,8 @@ class BazelApplicationModelAssemblerTest {
             base.mode(),
             base.applicationName(),
             base.applicationVersion(),
-            base.producerVersion());
+            base.producerVersion(),
+            null);
 
     BazelApplicationModel model = BazelApplicationModelAssembler.assemble(platformInputs);
 
@@ -491,7 +494,8 @@ class BazelApplicationModelAssemblerTest {
             base.mode(),
             base.applicationName(),
             base.applicationVersion(),
-            base.producerVersion());
+            base.producerVersion(),
+            null);
 
     BazelApplicationModel model = BazelApplicationModelAssembler.assemble(branchInputs);
 
@@ -607,7 +611,8 @@ class BazelApplicationModelAssemblerTest {
             Mode.TEST,
             "test",
             "ignored-test-version",
-            base.producerVersion());
+            base.producerVersion(),
+            null);
 
     BazelApplicationModel model = BazelApplicationModelAssembler.assemble(testInputs);
 
@@ -706,7 +711,8 @@ class BazelApplicationModelAssemblerTest {
             Mode.TEST,
             "test",
             "ignored-test-version",
-            base.producerVersion());
+            base.producerVersion(),
+            null);
 
     BazelApplicationModel model = BazelApplicationModelAssembler.assemble(testInputs);
 
@@ -719,6 +725,112 @@ class BazelApplicationModelAssemblerTest {
             .findFirst()
             .orElseThrow()
             .isReloadable());
+  }
+
+  @Test
+  void namedTestApplicationFoldsEveryTestTargetIntoItsTestSources() throws IOException {
+    var base = inputs(true, DEPLOYMENT);
+    String firstTest = "@@//:first_test_lib";
+    String secondTest = "@@//:second_test_lib";
+    String fixture = "@@//:test_support";
+    Path firstJar = jar("first-test-lib.jar", null);
+    Path secondJar = jar("second-test-lib.jar", null);
+    Path fixtureJar = jar("test-support.jar", null);
+    var fragments = new java.util.ArrayList<>(base.targetFragments());
+    fragments.add(testLocal(firstTest, firstJar, List.of(edge(APP), edge(fixture))));
+    // A test target reaching another one keeps that edge inside the application's test sources.
+    fragments.add(testLocal(secondTest, secondJar, List.of(edge(APP), edge(firstTest))));
+    fragments.add(testLocal(fixture, fixtureJar, List.of(edge(APP))));
+    var testInputs =
+        continuousTestInputs(
+            base, fragments, List.of(firstTest, secondTest), APP, firstJar, secondJar, fixtureJar);
+
+    BazelApplicationModel model = BazelApplicationModelAssembler.assemble(testInputs);
+
+    assertEquals(APP, model.applicationId());
+    assertFalse(model.nodes().stream().anyMatch(node -> firstTest.equals(node.id())));
+    assertFalse(model.nodes().stream().anyMatch(node -> secondTest.equals(node.id())));
+    assertEquals(
+        DependencyScope.TEST,
+        node(model, APP).dependencies().stream()
+            .filter(edge -> fixture.equals(edge.targetId()))
+            .findFirst()
+            .orElseThrow()
+            .scope());
+    assertTrue(node(model, fixture).classpath().reloadable());
+    var tests =
+        model.workspaceModules().stream()
+            .filter(module -> APP.equals(module.id()))
+            .findFirst()
+            .orElseThrow()
+            .sourceSets()
+            .get(1);
+    assertEquals("tests", tests.classifier());
+    assertEquals(
+        List.of(firstJar + ".quarkus-classes", secondJar + ".quarkus-classes"),
+        tests.outputDirectories());
+  }
+
+  @Test
+  void namedTestApplicationRejectsATestOfAnotherApplication() throws IOException {
+    var base = inputs(true, DEPLOYMENT);
+    String appTest = "@@//:app_test_lib";
+    String otherTest = "@@//:other_test_lib";
+    String other = "@@//:other";
+    Path appTestJar = jar("app-test-lib.jar", null);
+    Path otherTestJar = jar("other-test-lib.jar", null);
+    Path otherJar = jar("other.jar", null);
+    var fragments = new java.util.ArrayList<>(base.targetFragments());
+    fragments.add(testLocal(appTest, appTestJar, List.of(edge(APP))));
+    fragments.add(testLocal(otherTest, otherTestJar, List.of(edge(other))));
+    fragments.add(
+        withSources(local(other, otherJar, List.of()), "src/main/java/com/example/Other.java"));
+    var testInputs =
+        continuousTestInputs(
+            base, fragments, List.of(appTest, otherTest), APP, appTestJar, otherTestJar, otherJar);
+
+    BazelApplicationModelException exception =
+        assertThrows(
+            BazelApplicationModelException.class,
+            () -> BazelApplicationModelAssembler.assemble(testInputs));
+
+    assertTrue(exception.getMessage().contains(otherTest + " tests " + other));
+  }
+
+  /** TEST-mode inputs over {@code roots} that name {@code application} as the one under test. */
+  private static BazelApplicationModelAssembler.Inputs continuousTestInputs(
+      BazelApplicationModelAssembler.Inputs base,
+      List<TargetFragment> fragments,
+      List<String> roots,
+      String application,
+      Path... jars) {
+    var runtimePaths = new java.util.HashSet<>(base.runtimeClasspathPaths());
+    var deploymentPaths = new java.util.HashSet<>(base.deploymentClasspathPaths());
+    for (Path jar : jars) {
+      runtimePaths.add(jar.toString());
+      deploymentPaths.add(jar.toString());
+    }
+    return new BazelApplicationModelAssembler.Inputs(
+        new Roots("@@//:app_dev", roots),
+        fragments,
+        base.runtimeCatalog(),
+        emptyConditionalCatalog(),
+        base.deploymentCatalog(),
+        base.platformCatalog(),
+        base.localDeployments(),
+        base.localRuntimeAliases(),
+        Map.of(),
+        base.deploymentPaths(),
+        base.platformPropertyPaths(),
+        runtimePaths,
+        deploymentPaths,
+        base.modelPrivateTargetIds(),
+        base.quarkusVersion(),
+        Mode.TEST,
+        "app",
+        "ignored-test-version",
+        base.producerVersion(),
+        application);
   }
 
   @Test
@@ -896,7 +1008,8 @@ class BazelApplicationModelAssemblerTest {
         mode,
         base.applicationName(),
         base.applicationVersion(),
-        base.producerVersion());
+        base.producerVersion(),
+        null);
   }
 
   private static ConditionalCatalogNode conditionalNode(String artifactId) {
@@ -1013,7 +1126,8 @@ class BazelApplicationModelAssemblerTest {
         Mode.NORMAL,
         "demo",
         "1.2.3",
-        "test");
+        "test",
+        null);
   }
 
   private static ConditionalCatalog emptyConditionalCatalog() {
@@ -1041,7 +1155,8 @@ class BazelApplicationModelAssemblerTest {
         base.mode(),
         base.applicationName(),
         base.applicationVersion(),
-        base.producerVersion());
+        base.producerVersion(),
+        null);
   }
 
   private static BazelApplicationModelAssembler.Inputs withDeploymentCatalog(
@@ -1065,7 +1180,8 @@ class BazelApplicationModelAssemblerTest {
         base.mode(),
         base.applicationName(),
         base.applicationVersion(),
-        base.producerVersion());
+        base.producerVersion(),
+        null);
   }
 
   private Path jar(String name, String deploymentArtifact) throws IOException {
@@ -1217,7 +1333,8 @@ class BazelApplicationModelAssemblerTest {
         Mode.TEST,
         "multi_dep_test",
         "ignored-test-version",
-        base.producerVersion());
+        base.producerVersion(),
+        null);
   }
 
   private static TargetFragment withEdges(TargetFragment fragment, List<TargetEdge> edges) {

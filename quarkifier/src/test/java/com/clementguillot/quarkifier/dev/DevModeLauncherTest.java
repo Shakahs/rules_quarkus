@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.clementguillot.quarkifier.QuarkifierConfig;
 import com.clementguillot.quarkifier.TestQuarkifierConfig;
 import com.clementguillot.quarkifier.devhook.GenerationSwitch;
+import io.quarkus.bootstrap.BootstrapConstants;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.ApplicationModel;
 import io.quarkus.bootstrap.model.ApplicationModelBuilder;
@@ -311,7 +312,7 @@ class DevModeLauncherTest {
 
     List<String> cmd =
         DevModeLauncher.devProcessCommand(
-            config, Path.of("model.dat"), Path.of("dev.jar"), Path.of("/session"));
+            config, Path.of("model.dat"), null, Path.of("dev.jar"), Path.of("/session"));
 
     String agent = "-javaagent:" + agentJar;
     assertTrue(cmd.contains(agent), cmd::toString);
@@ -326,7 +327,7 @@ class DevModeLauncherTest {
 
     List<String> cmd =
         DevModeLauncher.devProcessCommand(
-            config, Path.of("model.dat"), Path.of("dev.jar"), Path.of("/session"));
+            config, Path.of("model.dat"), null, Path.of("dev.jar"), Path.of("/session"));
 
     assertTrue(cmd.stream().noneMatch(arg -> arg.startsWith("-javaagent:")), cmd::toString);
   }
@@ -338,7 +339,7 @@ class DevModeLauncherTest {
 
     List<String> cmd =
         DevModeLauncher.devProcessCommand(
-            config, Path.of("model.dat"), Path.of("dev.jar"), Path.of("/session"));
+            config, Path.of("model.dat"), null, Path.of("dev.jar"), Path.of("/session"));
 
     String property = "-D" + GenerationSwitch.SESSION_PROPERTY + "=/session";
     assertTrue(cmd.contains(property), cmd::toString);
@@ -442,5 +443,75 @@ class DevModeLauncherTest {
     List<Path> result = DevModeLauncher.collectParentFirstRuntimeJars(config, model);
 
     assertEquals(List.of(parentFirstJar), result);
+  }
+
+  // ---- continuous tests ----
+
+  @Test
+  void devProcessCommand_runsTheContinuousTestsWithTheirModelAndFlags(@TempDir Path tempDir)
+      throws Exception {
+    Path core = deploymentJar(tempDir, "quarkus-core-deployment");
+    Path flags = Files.writeString(tempDir.resolve("flags.txt"), "-Xmx2g\n-Duser.timezone=UTC\n");
+    var config =
+        devConfig(
+            "--core-deployment-classpath",
+            core.toString(),
+            "--continuous-test-model",
+            "test-model.json",
+            "--continuous-test-jvm-flags-file",
+            flags.toString());
+
+    List<String> cmd =
+        DevModeLauncher.devProcessCommand(
+            config,
+            Path.of("model.dat"),
+            Path.of("/tmp/test-model.dat"),
+            Path.of("dev.jar"),
+            Path.of("/session"));
+
+    String testModel = "-D" + BootstrapConstants.SERIALIZED_TEST_APP_MODEL + "=/tmp/test-model.dat";
+    assertTrue(cmd.contains(testModel), cmd::toString);
+    assertTrue(cmd.contains("-Xmx2g"), cmd::toString);
+    assertTrue(cmd.contains("-Duser.timezone=UTC"), cmd::toString);
+    assertTrue(cmd.contains("-Dquarkus.test.only-test-application-module=true"), cmd::toString);
+    assertTrue(cmd.indexOf("-Xmx2g") < cmd.indexOf("-jar"), "JVM options precede -jar: " + cmd);
+  }
+
+  @Test
+  void buildDevModeContext_withContinuousTests_givesTheApplicationItsTestClasses() {
+    var tests =
+        new DevModeLauncher.ContinuousTests(
+            Path.of("/session/test-trigger"),
+            Path.of("/session/current/test-classes"),
+            Path.of("/session/no-classes"),
+            List.of());
+
+    var context = DevModeLauncher.buildDevModeContext(devConfig(), modelBuilder().build(), tests);
+
+    var test = context.getApplicationRoot().getTest().orElseThrow();
+    assertEquals("/session/current/test-classes", test.getClassesPath());
+    assertEquals("/session/current/test-classes", test.getResourcesOutputPath());
+    assertEquals(1, test.getSourcePaths().size());
+    assertTrue(test.getSourcePaths().contains(Path.of("/session/test-trigger")));
+    assertTrue(test.getResourcePaths().isEmpty());
+  }
+
+  @Test
+  void buildDevModeContext_aWorkspaceJarOnlyTheTestsReachHoldsTestClassesOnly() {
+    Path fixtureClasses = Path.of("/session/current/002-fixture");
+    var fixture = workspaceDependency("fixture", Path.of("/workspace/fixture"), fixtureClasses);
+    var tests =
+        new DevModeLauncher.ContinuousTests(
+            Path.of("/session/test-trigger"),
+            Path.of("/session/current/test-classes"),
+            Path.of("/session/no-classes"),
+            List.of(fixture.build()));
+
+    var context = DevModeLauncher.buildDevModeContext(devConfig(), modelBuilder().build(), tests);
+
+    var module = context.getAdditionalModules().get(0);
+    assertEquals("/session/no-classes", module.getMain().getClassesPath());
+    assertEquals("/session/no-classes", module.getMain().getResourcesOutputPath());
+    assertEquals(fixtureClasses.toString(), module.getTest().orElseThrow().getClassesPath());
   }
 }

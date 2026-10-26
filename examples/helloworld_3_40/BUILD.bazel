@@ -14,7 +14,7 @@ java_library(
 
 quarkus_app(
     name = "helloworld",
-    # Quarkus continuous testing in `bazel run //:helloworld_dev` runs these through `bazel test`.
+    # `bazel run //:helloworld_dev` runs these as Quarkus continuous tests, in the dev JVM.
     continuous_tests = ["//:test"],
     version = "1.0.0",
     deps = [":lib"],

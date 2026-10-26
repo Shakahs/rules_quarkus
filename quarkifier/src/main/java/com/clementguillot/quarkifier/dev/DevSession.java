@@ -10,6 +10,7 @@ import java.nio.file.FileSystemException;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
@@ -17,6 +18,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,10 @@ import org.jboss.logging.Logger;
  * the newest complete generation and {@value GenerationSwitch#CURRENT} the one the application
  * runs; the watcher only moves the first, and {@link GenerationSwitch} moves the second inside
  * Quarkus's scan.
+ *
+ * <p>With continuous testing, the tests are modules too ({@link #testModules}): their classes are
+ * linked into each generation's {@value #TEST_CLASSES}, and the workspace artifacts only they reach
+ * beside the application's, so a test run reads the same complete build the application does.
  */
 public final class DevSession {
 
@@ -48,6 +54,14 @@ public final class DevSession {
   private static final String HOOK_JAR = "rules-quarkus-dev-session.jar";
   private static final String HOOK_SERVICE =
       "META-INF/services/" + HotReplacementSetup.class.getName();
+
+  /** The directory of a generation holding the continuous tests' classes. */
+  public static final String TEST_CLASSES = "test-classes";
+
+  private static final String NO_CLASSES = "no-classes";
+
+  /** The classifier of the application's test sources in a TEST model. */
+  private static final String TEST_SOURCES = "tests";
 
   /**
    * One dev module: a reloadable workspace artifact of the model and the Bazel directory it is
@@ -85,23 +99,89 @@ public final class DevSession {
       if (!isModule(model, node)) {
         continue;
       }
-      if (node.paths().size() != 1) {
-        throw new IllegalStateException(
-            "Dev module "
-                + node.id()
-                + " must resolve to exactly one class directory, got "
-                + node.paths());
-      }
-      String modelPath = node.paths().get(0);
-      Path found = artifactPaths.getOrDefault(modelPath, Path.of(modelPath));
-      String name =
-          String.format(
-              "%03d-%s",
-              result.size(), node.coordinates().artifactId().replaceAll("[^A-Za-z0-9._-]", "_"));
+      String modelPath = singlePath(node);
       result.add(
-          new Module(modelPath, name, found.toAbsolutePath().normalize().toRealPath()));
+          new Module(
+              modelPath, moduleName(result.size(), node), bazelDirectory(modelPath, artifactPaths)));
     }
     return result;
+  }
+
+  /**
+   * The dev modules the continuous tests of {@code testModel} add to {@code devModules}: their test
+   * classes, all in one {@value #TEST_CLASSES} directory, and every workspace artifact only the
+   * tests reach.
+   *
+   * <p>Quarkus runs a module's tests from a single class directory, so the test targets' class
+   * directories are merged into one. Two of them may hold the same file only with the same
+   * content.
+   *
+   * @param testModel the TEST model of the continuous tests, whose application is the dev model's
+   * @param devModules the dev model's modules
+   * @param artifactPaths each model artifact path to the file holding it here
+   * @throws IOException if a module's directory cannot be resolved
+   * @throws IllegalStateException if a test-only module does not have exactly one path
+   */
+  public static List<Module> testModules(
+      BazelApplicationModel testModel, List<Module> devModules, Map<String, Path> artifactPaths)
+      throws IOException {
+    var devPaths = new HashSet<String>();
+    devModules.forEach(module -> devPaths.add(module.modelPath()));
+    var result = new ArrayList<Module>();
+    for (String output : testOutputDirectories(testModel)) {
+      result.add(new Module(output, TEST_CLASSES, bazelDirectory(output, artifactPaths)));
+    }
+    int number = devModules.size();
+    for (BazelApplicationModel.Node node : testModel.nodes()) {
+      if (testModel.applicationId().equals(node.id()) || !isModule(testModel, node)) {
+        continue;
+      }
+      String modelPath = singlePath(node);
+      if (devPaths.contains(modelPath)) {
+        continue;
+      }
+      result.add(
+          new Module(modelPath, moduleName(number++, node), bazelDirectory(modelPath, artifactPaths)));
+    }
+    return result;
+  }
+
+  /** The output directories of the application's test sources in {@code testModel}. */
+  private static List<String> testOutputDirectories(BazelApplicationModel testModel) {
+    String workspaceId =
+        testModel.nodes().stream()
+            .filter(node -> testModel.applicationId().equals(node.id()))
+            .findFirst()
+            .orElseThrow()
+            .workspaceModuleId();
+    return testModel.workspaceModules().stream()
+        .filter(module -> module.id().equals(workspaceId))
+        .flatMap(module -> module.sourceSets().stream())
+        .filter(sourceSet -> TEST_SOURCES.equals(sourceSet.classifier()))
+        .flatMap(sourceSet -> sourceSet.outputDirectories().stream())
+        .toList();
+  }
+
+  private static String singlePath(BazelApplicationModel.Node node) {
+    if (node.paths().size() != 1) {
+      throw new IllegalStateException(
+          "Dev module "
+              + node.id()
+              + " must resolve to exactly one class directory, got "
+              + node.paths());
+    }
+    return node.paths().get(0);
+  }
+
+  private static String moduleName(int number, BazelApplicationModel.Node node) {
+    return String.format(
+        "%03d-%s", number, node.coordinates().artifactId().replaceAll("[^A-Za-z0-9._-]", "_"));
+  }
+
+  private static Path bazelDirectory(String modelPath, Map<String, Path> artifactPaths)
+      throws IOException {
+    Path found = artifactPaths.getOrDefault(modelPath, Path.of(modelPath));
+    return found.toAbsolutePath().normalize().toRealPath();
   }
 
   private static boolean isModule(BazelApplicationModel model, BazelApplicationModel.Node node) {
@@ -128,6 +208,8 @@ public final class DevSession {
     deleteTree(root);
     Files.createDirectories(root);
     var session = new DevSession(root.toAbsolutePath().normalize(), modules);
+    Files.createDirectories(session.testTrigger());
+    Files.createDirectories(session.noClasses());
     Path first = session.link(0).getFileName();
     Files.createSymbolicLink(session.root.resolve(GenerationSwitch.CURRENT), first);
     Files.createSymbolicLink(session.root.resolve(GenerationSwitch.READY), first);
@@ -141,7 +223,26 @@ public final class DevSession {
 
   /** The directories Bazel builds the modules into, which the session only reads. */
   public List<Path> bazelDirectories() {
-    return modules.stream().map(Module::bazelDirectory).toList();
+    return modules.stream().map(Module::bazelDirectory).distinct().toList();
+  }
+
+  /**
+   * The directory {@link GenerationSwitch} writes to whenever it moves {@value
+   * GenerationSwitch#CURRENT}: the continuous tests' source directory, which Quarkus watches to
+   * know when to look for changed classes and run the tests again.
+   */
+  public Path testTrigger() {
+    return root.resolve(GenerationSwitch.TEST_TRIGGER);
+  }
+
+  /** An empty directory: the main classes of a module only the continuous tests reach. */
+  public Path noClasses() {
+    return root.resolve(NO_CLASSES);
+  }
+
+  /** The continuous tests' class directory in the current generation. */
+  public Path testClasses() {
+    return root.resolve(GenerationSwitch.CURRENT).resolve(TEST_CLASSES);
   }
 
   /** Each module's model path to the class path the application reads it from. */
@@ -203,9 +304,14 @@ public final class DevSession {
   /** Links every module's Bazel directory into generation {@code number}. */
   private Path link(int number) throws IOException {
     Path generation = root.resolve(GENERATION_PREFIX + number);
+    // The generation before, which publish() never prunes: the newest one Quarkus may have read.
+    Path previous = number == 0 ? null : root.resolve(GENERATION_PREFIX + (number - 1));
     deleteTree(generation);
     for (Module module : modules) {
-      linkTree(module.bazelDirectory(), generation.resolve(module.name()));
+      linkTree(
+          module.bazelDirectory(),
+          generation.resolve(module.name()),
+          previous == null ? null : previous.resolve(module.name()));
     }
     return generation;
   }
@@ -213,8 +319,19 @@ public final class DevSession {
   /**
    * Mirrors {@code source} into {@code target} with a hard link per file. A symbolic link in the
    * source is followed: linking the link itself would lead back into Bazel's outputs.
+   *
+   * <p>Modules that share a directory, as the continuous tests' class directories do, are merged
+   * into it: a file another module already put there must have this one's content.
+   *
+   * <p>A file with the content it had in the previous generation is linked from there instead.
+   * Bazel writes a rebuilt target's whole class directory again, so every file of it is new to the
+   * file system, but Quarkus tells a changed file by its modification time: linking the new copy
+   * would present the whole target as changed, and a resource among it, the target's {@code
+   * beans.xml} say, restarts the application even when only one method body changed.
+   *
+   * @param previous the module's directory in the previous generation, or {@code null} for none
    */
-  private void linkTree(Path source, Path target) throws IOException {
+  private void linkTree(Path source, Path target, Path previous) throws IOException {
     Files.walkFileTree(
         source,
         EnumSet.of(FileVisitOption.FOLLOW_LINKS),
@@ -234,10 +351,39 @@ public final class DevSession {
               throw new IOException("Not a regular file in a class directory: " + file);
             }
             Path existing = Files.isSymbolicLink(file) ? file.toRealPath() : file;
-            linkOrCopy(existing, target.resolve(source.relativize(file).toString()));
+            Path link = target.resolve(source.relativize(file).toString());
+            if (Files.exists(link, LinkOption.NOFOLLOW_LINKS)) {
+              if (Files.mismatch(existing, link) != -1L) {
+                throw new IOException(
+                    "Two dev modules hold "
+                        + source.relativize(file)
+                        + " with different content; the second is "
+                        + existing);
+              }
+              return FileVisitResult.CONTINUE;
+            }
+            linkOrCopy(unchanged(existing, previous, source.relativize(file)), link);
             return FileVisitResult.CONTINUE;
           }
         });
+  }
+
+  /**
+   * The previous generation's copy of {@code relative} when it holds {@code existing}'s content,
+   * otherwise {@code existing}. A file Bazel did not write again is the previous copy itself, which
+   * costs no comparison.
+   */
+  private static Path unchanged(Path existing, Path previous, Path relative) throws IOException {
+    if (previous == null) {
+      return existing;
+    }
+    Path kept = previous.resolve(relative.toString());
+    if (!Files.isRegularFile(kept, LinkOption.NOFOLLOW_LINKS)) {
+      return existing;
+    }
+    return Files.isSameFile(existing, kept) || Files.mismatch(existing, kept) == -1L
+        ? kept
+        : existing;
   }
 
   /** Hard-links {@code existing}, copying it with its attributes across file systems. */
@@ -288,7 +434,7 @@ public final class DevSession {
 
   /** Deletes {@code path} and everything below it, without following symbolic links. */
   static void deleteTree(Path path) throws IOException {
-    if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+    if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
       return;
     }
     try (Stream<Path> paths = Files.walk(path)) {

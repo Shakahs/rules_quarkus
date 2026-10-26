@@ -63,6 +63,10 @@ public final class DevModeLauncher {
   private static final String CLASS_CHANGE_AGENT_GROUP_ID = "io.quarkus";
   private static final String CLASS_CHANGE_AGENT_ARTIFACT_ID = "quarkus-class-change-agent";
 
+  /** The build-time property that keeps Quarkus to the application module's tests. */
+  private static final String ONLY_TEST_APPLICATION_MODULE =
+      "quarkus.test.only-test-application-module";
+
   private DevModeLauncher() {}
 
   /** The dev session's directory below the output directory. */
@@ -73,21 +77,47 @@ public final class DevModeLauncher {
    *
    * @param config CLI configuration including source dirs, classpath, output dir
    * @param explicitModel the validated dev application model
+   * @param continuousTestModel the validated TEST model of the tests to run continuously, or
+   *     {@code null} for none
    * @throws AugmentationException if dev mode fails to start
    */
-  public static void launch(QuarkifierConfig config, BazelApplicationModel explicitModel)
+  public static void launch(
+      QuarkifierConfig config,
+      BazelApplicationModel explicitModel,
+      BazelApplicationModel continuousTestModel)
       throws AugmentationException {
     try {
-      DevSession session =
-          DevSession.start(
-              sessionRoot(config), DevSession.modules(explicitModel, config.artifactPaths()));
+      var modules = new ArrayList<>(DevSession.modules(explicitModel, config.artifactPaths()));
+      if (continuousTestModel != null) {
+        if (!continuousTestModel.applicationId().equals(explicitModel.applicationId())) {
+          throw new AugmentationException(
+              "The continuous tests test "
+                  + continuousTestModel.applicationId()
+                  + ", not the dev application "
+                  + explicitModel.applicationId());
+        }
+        modules.addAll(
+            DevSession.testModules(continuousTestModel, modules, config.artifactPaths()));
+      }
+      DevSession session = DevSession.start(sessionRoot(config), modules);
       ApplicationModel appModel =
           ExplicitApplicationModelBuilder.build(
               explicitModel,
               config.artifactPaths(),
               new ExplicitApplicationModelBuilder.DevSessionPaths(
                   session.classPaths(), session.writeHookJar()));
-      DevModeContext context = buildDevModeContext(config, appModel);
+      // The tests read the session's directories as the application does. The hook belongs to
+      // the dev application alone: the tests run inside it.
+      ApplicationModel testModel =
+          continuousTestModel == null
+              ? null
+              : ExplicitApplicationModelBuilder.build(
+                  continuousTestModel,
+                  config.artifactPaths(),
+                  new ExplicitApplicationModelBuilder.DevSessionPaths(session.classPaths(), null));
+      ContinuousTests tests =
+          testModel == null ? null : ContinuousTests.inSession(session, appModel, testModel);
+      DevModeContext context = buildDevModeContext(config, appModel, tests);
 
       // Ensure the target directory exists — Quarkus writes build-metrics.json there.
       // In a Bazel workspace this directory doesn't exist by default (unlike Maven's target/).
@@ -97,6 +127,7 @@ public final class DevModeLauncher {
       // ApplicationModelSerializer reads back in the dev JVM.
       AppModelSerializerStrategy serializer = new AppModelSerializerImpl();
       Path serializedModel = serializer.serialize(appModel);
+      Path serializedTestModel = testModel == null ? null : serializer.serialize(testModel);
 
       // Dev jar mirrors Maven's DevMojo / DevModeCommandLineBuilder.
       Path devJar = createDevJar(context, config, appModel);
@@ -109,7 +140,8 @@ public final class DevModeLauncher {
       BazelFileWatcher watcher = startWatcherIfConfigured(config, projectFiles, session);
       Process process = null;
       try {
-        process = startDevProcess(config, serializedModel, devJar, session.root());
+        process =
+            startDevProcess(config, serializedModel, serializedTestModel, devJar, session.root());
 
         final Process devProcess = process;
         Runtime.getRuntime()
@@ -149,9 +181,17 @@ public final class DevModeLauncher {
    * serialized {@link DevModeContext} build-system properties — so both must derive it here.
    */
   private static java.util.Properties devBuildProperties(QuarkifierConfig config) {
-    return BuildProperties.defaults(
-        config.buildProperties(), config.mainClass(), null, config.packageType());
+    var properties =
+        BuildProperties.defaults(
+            config.buildProperties(), config.mainClass(), null, config.packageType());
+    if (config.continuousTestModel() != null) {
+      // The continuous tests are the application's: the modules beside it carry test classes of
+      // their own only so that a change to them runs the tests again (ContinuousTests).
+      properties.setProperty(ONLY_TEST_APPLICATION_MODULE, "true");
+    }
+    return properties;
   }
+
 
   /**
    * The session directory: inside the output directory, which the launcher creates per run and
@@ -166,10 +206,15 @@ public final class DevModeLauncher {
 
   /** Starts the child JVM running {@link DevModeMain} from the dev jar. */
   private static Process startDevProcess(
-      QuarkifierConfig config, Path serializedModel, Path devJar, Path sessionRoot)
+      QuarkifierConfig config,
+      Path serializedModel,
+      Path serializedTestModel,
+      Path devJar,
+      Path sessionRoot)
       throws Exception {
     ProcessBuilder pb =
-        new ProcessBuilder(devProcessCommand(config, serializedModel, devJar, sessionRoot));
+        new ProcessBuilder(
+            devProcessCommand(config, serializedModel, serializedTestModel, devJar, sessionRoot));
     if (config.workspaceDir() != null) {
       pb.directory(config.workspaceDir().toFile());
     }
@@ -189,20 +234,36 @@ public final class DevModeLauncher {
    * quarkus.live-reload.instrumentation} is enabled.
    *
    * <p>The session directory reaches {@link GenerationSwitch} as a system property.
+   *
+   * <p>With continuous tests, the child runs them as Gradle's {@code quarkusDev} has it run them:
+   * it reads their TEST model from {@link BootstrapConstants#SERIALIZED_TEST_APP_MODEL}, and it
+   * takes on their JVM flags, since they run inside it.
    */
   // Visible for testing
   static List<String> devProcessCommand(
-      QuarkifierConfig config, Path serializedModel, Path devJar, Path sessionRoot) {
+      QuarkifierConfig config,
+      Path serializedModel,
+      Path serializedTestModel,
+      Path devJar,
+      Path sessionRoot) {
     List<String> cmd = new ArrayList<>();
     cmd.add(System.getProperty("java.home") + "/bin/java");
-    // Declared build properties come first so every launcher-owned setting
-    // below wins any key conflict: the JVM keeps the last `-D` for a name.
+    // Declared build properties and the tests' flags come first so every launcher-owned
+    // setting below wins any key conflict: the JVM keeps the last `-D` for a name.
     // This matches the ordering the test launcher pins.
     var buildProperties = devBuildProperties(config);
     buildProperties.stringPropertyNames().stream()
         .sorted()
         .map(name -> "-D" + name + "=" + buildProperties.getProperty(name))
         .forEach(cmd::add);
+    if (serializedTestModel != null) {
+      cmd.addAll(config.continuousTestJvmFlags());
+      cmd.add(
+          "-D"
+              + BootstrapConstants.SERIALIZED_TEST_APP_MODEL
+              + "="
+              + serializedTestModel.toAbsolutePath());
+    }
     cmd.add("-Djava.util.logging.manager=org.jboss.logmanager.LogManager");
     cmd.add("-D" + GenerationSwitch.SESSION_PROPERTY + "=" + sessionRoot.toAbsolutePath());
     // Required for jboss-threads on Java 24+
@@ -351,9 +412,55 @@ public final class DevModeLauncher {
    * Builds a {@link DevModeContext} configured for Bazel-managed dev mode.
    *
    * <p>The modules are the model's: the application's own, and one per reloadable workspace
-   * dependency, each over its class directory in the dev session ({@link #moduleInfo}).
+   * dependency, each over its class directory in the dev session ({@link #moduleBuilder}).
    */
   static DevModeContext buildDevModeContext(QuarkifierConfig config, ApplicationModel appModel) {
+    return buildDevModeContext(config, appModel, null);
+  }
+
+  /**
+   * What continuous testing adds to the dev context.
+   *
+   * <p>The application module's tests run from the session's merged test class directory. Quarkus
+   * looks for changed classes, and runs the tests they affect, when a test source changes; their
+   * one source directory is the {@code trigger}, which {@link GenerationSwitch} writes to whenever
+   * the application moves to a new build.
+   *
+   * <p>A workspace artifact only the tests reach is a module of its own, its classes declared as
+   * its tests' over an empty main directory: Quarkus then finds a change to it as a change to test
+   * classes, which runs the tests again, rather than as an application change, which restarts the
+   * application. Quarkus is told to run no module's tests but the application's.
+   *
+   * @param trigger the directory {@link GenerationSwitch} writes to when it moves to a new build
+   * @param classes the tests' class directory in the current generation
+   * @param noClasses an empty directory: the main classes of a module only the tests reach
+   * @param testOnlyModules the workspace dependencies only the tests reach
+   */
+  record ContinuousTests(
+      Path trigger, Path classes, Path noClasses, List<ResolvedDependency> testOnlyModules) {
+
+    /** The continuous tests of {@code testModel}, run in {@code session} beside {@code appModel}. */
+    static ContinuousTests inSession(
+        DevSession session, ApplicationModel appModel, ApplicationModel testModel) {
+      var devModules = new HashSet<>(appModel.getReloadableWorkspaceDependencies());
+      return new ContinuousTests(
+          session.testTrigger(),
+          session.testClasses(),
+          session.noClasses(),
+          reloadableWorkspaceDependencies(testModel).stream()
+              .filter(dependency -> !devModules.contains(dependency.getKey()))
+              .toList());
+    }
+  }
+
+  /**
+   * Builds a {@link DevModeContext} configured for Bazel-managed dev mode, with the continuous
+   * tests' units when there are any.
+   *
+   * @param tests the continuous tests, or {@code null} for none
+   */
+  static DevModeContext buildDevModeContext(
+      QuarkifierConfig config, ApplicationModel appModel, ContinuousTests tests) {
     var context = new DevModeContext();
     context.setAbortOnFailedStart(true);
     context.setLocalProjectDiscovery(false);
@@ -378,26 +485,58 @@ public final class DevModeLauncher {
         .forEach((k, v) -> context.getBuildSystemProperties().put((String) k, (String) v));
 
     ResolvedDependency application = appModel.getAppArtifact();
-    context.setApplicationRoot(
-        moduleInfo(
+    var applicationModule =
+        moduleBuilder(
             application,
             config.appName() != null ? config.appName() : application.getArtifactId(),
             projectRoot,
             // targetDir must be a child of projectRoot so that WorkspaceProcessor (which does
             // targetDir.getParent() to find the project root) shows the correct source tree.
             // launch() creates it, since Bazel workspaces don't have a target/ dir.
-            projectRoot.resolve("target")));
+            projectRoot.resolve("target"));
+    if (tests != null) {
+      testUnit(applicationModule, tests.classes().toString(), tests.trigger());
+    }
+    context.setApplicationRoot(applicationModule.build());
     for (ResolvedDependency dependency : reloadableWorkspaceDependencies(appModel)) {
       context
           .getAdditionalModules()
           .add(
-              moduleInfo(
-                  dependency,
-                  dependency.getArtifactId(),
-                  dependency.getWorkspaceModule().getModuleDir().toPath(),
-                  null));
+              moduleBuilder(
+                      dependency,
+                      dependency.getArtifactId(),
+                      dependency.getWorkspaceModule().getModuleDir().toPath(),
+                      null)
+                  .build());
+    }
+    if (tests != null) {
+      for (ResolvedDependency dependency : tests.testOnlyModules()) {
+        var module =
+            moduleBuilder(
+                dependency,
+                dependency.getArtifactId(),
+                dependency.getWorkspaceModule().getModuleDir().toPath(),
+                null);
+        String classes = classDirectory(dependency);
+        String noClasses = tests.noClasses().toAbsolutePath().toString();
+        module.setClassesPath(noClasses).setResourcesOutputPath(noClasses);
+        context.getAdditionalModules().add(testUnit(module, classes, tests.trigger()).build());
+      }
     }
     return context;
+  }
+
+  /**
+   * Declares {@code classes} the module's test classes, with no test sources Quarkus could compile:
+   * its one test source directory is the dev session's trigger, which holds no source file.
+   */
+  private static DevModeContext.ModuleInfo.Builder testUnit(
+      DevModeContext.ModuleInfo.Builder module, String classes, Path trigger) {
+    return module
+        .setTestSourcePaths(PathList.of(trigger.toAbsolutePath()))
+        .setTestClassesPath(classes)
+        .setTestResourcePaths(PathList.empty())
+        .setTestResourcesOutputPath(classes);
   }
 
   /**
@@ -481,19 +620,9 @@ public final class DevModeLauncher {
    * @param targetDir the module's build target directory, or {@code null} for a dependency
    * @throws IllegalStateException if the model does not resolve the artifact to exactly one path
    */
-  private static DevModeContext.ModuleInfo moduleInfo(
+  private static DevModeContext.ModuleInfo.Builder moduleBuilder(
       ResolvedDependency artifact, String name, Path projectDirectory, Path targetDir) {
-    // Quarkus reads a module's class path as a single directory when it scans for changed
-    // resources, so an artifact the model spreads over several paths has no faithful module.
-    var paths = artifact.getResolvedPaths();
-    if (paths.size() != 1) {
-      throw new IllegalStateException(
-          "Dev module "
-              + artifact.toCompactCoords()
-              + " must resolve to exactly one class directory, got "
-              + paths);
-    }
-    String classesPath = paths.iterator().next().toAbsolutePath().toString();
+    String classesPath = classDirectory(artifact);
     var builder =
         new DevModeContext.ModuleInfo.Builder()
             .setArtifactKey(artifact.getKey())
@@ -506,6 +635,21 @@ public final class DevModeLauncher {
     if (targetDir != null) {
       builder.setTargetDir(targetDir.toAbsolutePath().toString());
     }
-    return builder.build();
+    return builder;
+  }
+
+  /** The one directory the model resolves {@code artifact} to. */
+  private static String classDirectory(ResolvedDependency artifact) {
+    // Quarkus reads a module's class path as a single directory when it scans for changed
+    // resources, so an artifact the model spreads over several paths has no faithful module.
+    var paths = artifact.getResolvedPaths();
+    if (paths.size() != 1) {
+      throw new IllegalStateException(
+          "Dev module "
+              + artifact.toCompactCoords()
+              + " must resolve to exactly one class directory, got "
+              + paths);
+    }
+    return paths.iterator().next().toAbsolutePath().toString();
   }
 }

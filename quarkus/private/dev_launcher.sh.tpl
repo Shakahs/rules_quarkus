@@ -21,6 +21,13 @@ MODEL_FILE="${RUNFILES_DIR}/%{workspace}/%{model_file}"
 PROJECT_FILES_FILE="${RUNFILES_DIR}/%{workspace}/%{project_files_file}"
 MAIN_CLASS=%{main_class}
 
+# The continuous tests run inside the dev JVM, so their environment is its environment. A value
+# naming a data file names it below the runfiles tree, as the test launcher exports it.
+CONTINUOUS_TEST_MODEL="%{continuous_test_model}"
+CONTINUOUS_TEST_JVM_FLAGS_FILE="%{continuous_test_jvm_flags_file}"
+WORKSPACE_DIR="${RUNFILES_DIR}/%{workspace}"
+%{continuous_test_environment}
+
 # Build absolute-path classpath files for quarkifier (avoids E2BIG on Linux).
 # Each entry in the source files is prefixed with the runfiles directory.
 _prefix_cp_to_file() {
@@ -244,6 +251,12 @@ _JAVA_ARGFILE=$(mktemp "${OUTPUT_DIR}/quarkus_dev_args_XXXXXX")
   if [ -n "$PROJECT_FILES_VALUE" ]; then
     echo "--project-files"
     _q "$PROJECT_FILES_VALUE"
+  fi
+  if [ -n "$CONTINUOUS_TEST_MODEL" ]; then
+    echo "--continuous-test-model"
+    _q "${WORKSPACE_DIR}/${CONTINUOUS_TEST_MODEL}"
+    echo "--continuous-test-jvm-flags-file"
+    _q "${WORKSPACE_DIR}/${CONTINUOUS_TEST_JVM_FLAGS_FILE}"
   fi
   for arg in ${HOT_RELOAD_ARGS[@]+"${HOT_RELOAD_ARGS[@]}"}; do
     _q "$arg"

@@ -515,6 +515,44 @@ A successful redefinition logs `Application restart not required, replacing clas
 instrumentation`; with the property off, or without the agent, the same change restarts
 the application.
 
+## Continuous Testing
+
+`quarkus_app(continuous_tests = [...])` gives the dev target the application's
+`quarkus_test` targets, and Quarkus runs them as continuous tests inside the dev JVM, as
+Gradle's `quarkusDev` has it run them: from a TEST application model it reads at
+`quarkus-internal-test.serialized-app-model.path`.
+
+**One TEST model.** Each `quarkus_test` exports the parts of its own TEST model
+(`QuarkusContinuousTestInfo`). The dev target merges them and assembles one model with
+`assemble-model --test-application=<the dev application>`: every root that tests an
+application must test that one, and all of them become its `tests` source set, their
+dependencies its TEST-scope dependencies. A root that tests no application, a shared test
+fixture say, stays a TEST-scope dependency. The tests' `env`, `data`, `jvm_flags` and
+`build_properties` become the dev process's, since the tests run in it; two tests that set
+one differently fail analysis, and so does a test build property the dev target sets to
+another value. `test_classes` and `test_packages` become `quarkus.test.include-pattern`.
+
+**The tests read the session.** The tests are dev modules too (`DevSession.testModules`):
+the test targets' class directories are merged into each generation's `test-classes`, a
+file two of them hold with different content being an error, and every workspace jar only
+the tests reach is linked beside the application's modules. A test run therefore reads the
+same complete build the application runs, and Bazel remains the only compiler: the
+application module's test unit has `current/test-classes` as its classes and declares no
+source Quarkus could compile.
+
+**What starts a run.** Quarkus looks for changed classes, and runs the tests they affect,
+when a watched test source changes. The application module's one test source directory is
+the session's `test-trigger`: whenever `GenerationSwitch` moves `current` it writes the new
+generation's name there, and Quarkus's test scan, which waits for the scan lock the switch
+holds, then reads the generation just switched to. A workspace jar only the tests reach is
+a module whose classes are its *test* classes over an empty main directory, so a change to
+it reruns the tests rather than restarting the application;
+`quarkus.test.only-test-application-module=true` keeps Quarkus from running that module's
+tests of its own.
+
+A test source change rebuilds the dev target like any other, because the tests' classes are
+in its runfiles and their `src/test` roots are among the watched directories.
+
 ## Known Limitations
 
 - **Dependencies graph direct links**: The Dev UI "Application Dependencies" graph shows all runtime extensions as direct deps of the root node (instead of only user-declared ones like Maven does), because Bazel's flat classpath doesn't distinguish user-declared from transitive extensions ([#51](https://github.com/clementguillot/rules_quarkus/issues/51)).

@@ -6,6 +6,7 @@ load("@rules_java//java:java_test.bzl", "java_test")
 load(":application_model_aspect_test.bzl", "application_model_aspect_test_suite")
 load(":build_properties_test.bzl", "build_properties_test_suite")
 load(":codegen_metadata_test.bzl", "codegen_metadata_test_suite")
+load(":continuous_tests_test.bzl", "continuous_tests_test_suite")
 load(":model_catalogs_test.bzl", "model_catalogs_test_suite")
 load(":quarkus_app_impl_test.bzl", "quarkus_app_impl_test_suite")
 load(":quarkus_test_impl_test.bzl", "quarkus_test_impl_test_suite")
@@ -13,6 +14,7 @@ load(":quarkus_test_impl_test.bzl", "quarkus_test_impl_test_suite")
 exports_files([
     "application_model_aspect.bzl",
     "build_properties.bzl",
+    "continuous_tests.bzl",
     "launcher.sh.tpl",
     "model_catalogs_test.bzl",
     "model_assembly.bzl",
@@ -59,3 +61,5 @@ build_properties_test_suite()
 quarkus_test_impl_test_suite()
 
 quarkus_app_impl_test_suite()
+
+continuous_tests_test_suite()
