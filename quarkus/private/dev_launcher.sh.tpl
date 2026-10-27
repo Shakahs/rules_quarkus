@@ -8,7 +8,9 @@ cleanup() {
 }
 trap cleanup EXIT ERR TERM INT QUIT ABRT
 
-RUNFILES_DIR="${BASH_SOURCE[0]}.runfiles"
+# A runner that prepares the machine and then executes this launcher from its own runfiles, which
+# hold the dev target's, names that tree in RUNFILES_DIR, as a test runner names the test's.
+RUNFILES_DIR="${RUNFILES_DIR:-${BASH_SOURCE[0]}.runfiles}"
 
 # Resolve paths relative to runfiles
 JAVA="${RUNFILES_DIR}/%{workspace}/%{java_home}/bin/java"

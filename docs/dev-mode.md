@@ -474,6 +474,10 @@ quarkus_app(
 
 Then run `bazel run --config=dev //pkg:app_dev`.
 
+The launcher reads its runfiles from `RUNFILES_DIR` when that is set, and from its own
+`.runfiles` tree otherwise, so a runner that prepares the machine (loading container images,
+say) can carry the dev target in its runfiles and execute the launcher from there.
+
 The application reads the rebuilt class directories from disk, as runfiles of the dev target.
 `bazel run` always downloads a target's runfiles, but a `bazel build` downloads them from a
 remote cache or executor only with `--remote_download_outputs=toplevel` (or `all`): under
